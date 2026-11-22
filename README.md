@@ -2,6 +2,9 @@
 
 Imported from lareferencia-shell at 7a80682bccbd9ed092d13679777f901150bee1cb and lareferencia-embedding-service at eb251cca4a3b694bb802261dbc496f1448bec6a5.
 
+The package version follows the LA Referencia platform release. Python uses
+PEP 440, so platform version `5.0.0-rc4` is wheel version `5.0.0rc4`.
+
 ## Installation
 
 Create a virtual environment with Python 3.12 or later. The rights and SQLite
