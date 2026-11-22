@@ -1,6 +1,6 @@
 # Metadata enrichment packages
 
-A package contains results for one network, snapshot and input variant. Independent producers can update a working SQLite database in successive transactions. Publishing creates a standalone edition containing `enrichments.sqlite` and `manifest.json`. Python 3.9 or newer and the standard library are sufficient. Install the base package in a virtual environment and run the commands from that environment.
+A package contains results for one network, snapshot and input variant. Independent producers can update a working SQLite database in successive transactions. Publishing creates a standalone edition containing `enrichments.sqlite` and `manifest.json`. Python 3.12 or newer and the standard library are sufficient. Install the base package in a virtual environment and run the commands from that environment.
 
 ## Run the rights pipeline on the harvester server
 

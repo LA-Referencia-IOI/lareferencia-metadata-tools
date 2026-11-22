@@ -4,8 +4,8 @@ Imported from lareferencia-shell at 7a80682bccbd9ed092d13679777f901150bee1cb and
 
 ## Installation
 
-Create a virtual environment with Python 3.12 for the complete workflow. The
-rights and SQLite commands also support Python 3.9 and use the standard library.
+Create a virtual environment with Python 3.12 or later. The rights and SQLite
+commands use the standard library.
 Install the extras required on each machine.
 
 ```sh
