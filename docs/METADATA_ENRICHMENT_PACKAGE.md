@@ -53,6 +53,8 @@ The producer uses confirmed declarations from the v7 dictionary. Facet schema 4 
 | `dc.rights.license_l2` | L1 plus institution when applicable, known version, jurisdiction or declared country, variant and modifier | `CC_BY_NC_4.0_BR`, `INSTITUTIONAL_IPEA`, `RE_INC_1.0` |
 | `dc.rights.copyright` | Confirmed notice subtype | `NOTICE`, `ALL-RIGHTS-RESERVED`, `SOME-RIGHTS-RESERVED`, `RIGHTS-RESERVED` |
 
+Spanish declarations beginning with `Derechos de autor` produce `NOTICE` in `dc.rights.copyright`. Recognition ignores case and normalizes surrounding whitespace.
+
 Each value occurs once per item and field. L2 preserves canonical declaration attributes, including scope. Differences between declarations sharing a facet value are retained in `details`. Count distinct items per field and value. A network's country never supplies missing jurisdiction. L2 repeats L1 when details are absent. An item containing a license and copyright receives both license fields and the copyright field. An item with only copyright receives that field alone.
 
 The lower-level `build_rights_enrichment.py` command remains available for explicit dictionary inputs and historical recovered samples. See its `--help` for `--part`, `--closures` and `--checksums`.
@@ -82,6 +84,18 @@ python3 tools/metadata-enrichment/enrichments.py lookup edition-001/enrichments.
 
 Ingestion accepts JSONL and JSONL.GZ. A call commits its iterable atomically. A failed or interrupted batch rolls back. Separate files can serve as batches within an immutable run descriptor. Publish after all intended batches complete. Each result replaces the producer's entire contribution to that item. Empty `fields` records an evaluated empty result. Omitted items retain their previous results. A new run ID permits new provenance. Identity or input-hash conflicts reject the batch. The most recently committed result for each item and producer is current.
 
+## Install an edition for the transformer
+
+Install the published SQLite at `{store.basepath}/{NETWORK}/enrichments/facetas.sqlite`.
+For the production store this is `/volumes/tmp/data/AR/enrichments/facetas.sqlite`
+for Argentina. The transformer configuration takes the simple filename
+`facetas.sqlite`. Keep execution artifacts and logs in the pipeline run directory.
+
+Copy the complete edition to a temporary file in the destination directory,
+verify its size and SHA-256 against the published manifest, then atomically rename
+it to `facetas.sqlite`. Keep the delivery manifest beside it as
+`facetas.manifest.json`, with its file entry naming `facetas.sqlite`.
+
 ## Query and verify an edition
 
 `lookup` uses indexes on catalog ID or OAI identifier and returns the input identity, hash and fields grouped by producer. Unknown or ambiguous identifiers fail explicitly. A consumer must compare identity, variant and metadata hash before applying results.
@@ -100,3 +114,30 @@ WHERE r.producer = 'rights'
 GROUP BY o.target, facet
 ORDER BY o.target, items DESC;
 ```
+
+## Pack calculated embeddings in SQLite
+
+The same Python library publishes standalone vector editions from COMPLETE
+`embedding-vectors` v1 JSONL gzip packages with one float32 embedding profile.
+Each edition contains `embeddings.sqlite` and `manifest.json`.
+
+```sh
+python3 tools/metadata-enrichment/enrichments.py pack-vectors /path/to/vector-package /path/to/new-edition
+python3 tools/metadata-enrichment/enrichments.py lookup-vector /path/to/new-edition/embeddings.sqlite --network AR --catalog-id ITEM_ID
+```
+
+The converter verifies part hashes, sizes, counts, dimensions and unique
+`(network, catalogId)` identities before publishing the destination. Keep the
+source package immutable during conversion. The manifest retains the calculated
+vector and prepared-text package provenance, the profile and the SHA-256 of the
+published SQLite file. Lookup includes the calculated vector file and one-based
+line number.
+
+The vector database has its own SQLite application ID (`0x4C524556`) and schema
+version (`PRAGMA user_version=1`). It uses 16 KiB pages. The `items` table
+indexes document identity and joins to `parts` for source references.
+`vectors.vector` stores one little-endian IEEE 754 float32 BLOB per item, with
+four bytes per dimension. The conversion retains the input dimensions and
+float32 values. Store derived dimensions in their own editions with their own
+profile. Consumers can cross-reference a vector with a field enrichment edition
+by network and catalog ID. Open published databases in read-only mode.

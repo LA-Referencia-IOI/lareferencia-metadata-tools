@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Ingest v2 enrichment returns, query an item or publish a stable edition."""
+"""Publish and query metadata enrichment and vector packages."""
 import argparse
 import gzip
 import json
 from pathlib import Path
 import sqlite3
 
-from enrichment_package import lookup, publish, upsert_batch
+from enrichment_package import lookup, lookup_vector, publish, publish_vectors, upsert_batch
 
 
 def read_returns(path, run):
@@ -46,6 +46,13 @@ def main():
     edition = commands.add_parser('publish')
     edition.add_argument('database', type=Path)
     edition.add_argument('destination', type=Path)
+    vectors = commands.add_parser('pack-vectors', help='Convert a vector JSONL gzip package to SQLite')
+    vectors.add_argument('source', type=Path)
+    vectors.add_argument('destination', type=Path)
+    vector = commands.add_parser('lookup-vector', help='Read one vector by network and catalog ID')
+    vector.add_argument('database', type=Path)
+    vector.add_argument('--network', required=True)
+    vector.add_argument('--catalog-id', required=True)
     args = parser.parse_args()
     try:
         if args.command == 'ingest':
@@ -53,10 +60,14 @@ def main():
             result = {'evaluated': upsert_batch(args.database, run, read_returns(args.jsonl, run))}
         elif args.command == 'lookup':
             result = lookup(args.database, catalog_id=args.catalog_id, identifier=args.identifier)
+        elif args.command == 'pack-vectors':
+            result = publish_vectors(args.source, args.destination)
+        elif args.command == 'lookup-vector':
+            result = lookup_vector(args.database, network=args.network, catalog_id=args.catalog_id)
         else:
             result = publish(args.database, args.destination)
         print(json.dumps(result, ensure_ascii=False, indent=2))
-    except (OSError, ValueError, LookupError, TypeError, sqlite3.Error) as error:
+    except (OSError, EOFError, ValueError, LookupError, TypeError, sqlite3.Error) as error:
         parser.exit(1, f'{error}\n')
 
 
