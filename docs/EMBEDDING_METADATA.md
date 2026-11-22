@@ -10,11 +10,11 @@ From the LA Referencia shell, export the original metadata for the required netw
 export-metadata --network UY --variant original --format jsonl --mapping config/exports/bibliographic-roles-v1.json --compression gzip --output /srv/metadata-exports
 ```
 
-Install the Python command from the shell repository and provision the approved `lid.176.ftz` and `role.bin` files in the same models directory. The [pilot guide](../tools/embedding-metadata/README.md) documents how to obtain the language model and train the role model. The preparer also accepts the `classification-embeddings` 2.0 profile.
+Install the Python command from this repository and provision the approved `lid.176.ftz` and `role.bin` files in the same models directory. The [pilot guide](BIBLIOGRAPHIC_CLASSIFIER.md) documents how to obtain the language model and train the role model. The preparer also accepts the `classification-embeddings` 2.0 profile.
 
 ```sh
 python3.12 -m venv .venv
-.venv/bin/python -m pip install ./tools/embedding-metadata
+.venv/bin/python -m pip install ".[bibliographic]"
 
 .venv/bin/prepare-embedding-metadata \
   --input "$EXPORT_DIR" --models-dir "$MODELS_DIR" \
@@ -38,7 +38,7 @@ Add `--include-provenance` to produce `provenance.jsonl.gz`. The sidecar uses `(
 Use the batch calculator from the embedding-service repository. Pass the prepared package directory reported by Python. Pin a model revision available in the GPU environment.
 
 ```sh
-python scripts/python/compute_metadata_embeddings.py \
+compute-metadata-embeddings \
   "$PREPARED_DIR" "$VECTOR_DIR" --revision "$MODEL_REVISION"
 ```
 
@@ -49,7 +49,7 @@ The calculator verifies the data checksums and encodes the supplied text. It emi
 Omit `--combine` to produce an `annotated-metadata` v2 package. It includes a local SQLite index and arrays for titles, abstracts, raw keywords, affiliations, funders, document types and other descriptions. Titles and abstracts include their detected languages. Abstracts record their selection. Records without a title remain available for inspection. Add `--include-provenance` for the export locators and occurrence indexes.
 
 ```sh
-python3.12 tools/embedding-metadata/examples/build_inputs.py "$ANNOTATED_DIR" > entries.jsonl
+build-embedding-inputs "$ANNOTATED_DIR" > entries.jsonl
 ```
 
 This example creates texts per language for records with a title. Unknown-language occurrences get individual entries. New annotated packages keep the keywords in metadata and omit them from these texts. The example also reads historical v1 packages and respects their recorded keyword assignments. Use `--classified-only` to exclude uncertain fallbacks from this per-language view.
@@ -58,8 +58,8 @@ This example creates texts per language for records with a title. Unknown-langua
 
 The reference export for UY snapshot 4186 contains 30,752 records with usable titles. The combined recipe produces 30,752 inputs and preserves the 2,040 uncertain description selections from the historical annotation. The historical per-language pilot produced 53,737 inputs.
 
-Run the preparer tests from the shell repository after installing the package.
+Run the preparer tests from this repository after installing the package.
 
 ```sh
-.venv/bin/python -m unittest discover -s tools/embedding-metadata
+.venv/bin/python -m unittest discover -s tests
 ```

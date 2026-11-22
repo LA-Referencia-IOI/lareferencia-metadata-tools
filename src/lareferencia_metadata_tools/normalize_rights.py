@@ -6,12 +6,12 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from classify_export_licenses import classify_inventory_row
-from normalize_cc_licenses import plain
+from .classify_export_licenses import classify_inventory_row
+from .normalize_cc_licenses import plain
 
-from rights_catalog import REVIEWED_DECLARATIONS, REVIEWED_URLS
-from rights_taxonomy_v7 import project_v7
-from rights_catalog import RECOGNITION_CODES, INSTRUMENTS, NAMES, SLUGS, URLS, STATEMENT_CODES, STATEMENT_URI
+from .rights_catalog import REVIEWED_DECLARATIONS, REVIEWED_URLS
+from .rights_taxonomy_v7 import project_v7
+from .rights_catalog import RECOGNITION_CODES, INSTRUMENTS, NAMES, SLUGS, URLS, STATEMENT_CODES, STATEMENT_URI
 
 
 NOTICE_LABEL = re.compile(

@@ -20,7 +20,7 @@ class PackageTest(unittest.TestCase):
         self.models.mkdir()
         for name in ('lid.176.ftz', 'role.bin'):
             (self.models/name).write_bytes(b'test')
-        self.profile = json.loads((Path(__file__).resolve().parents[2] / 'config/exports/bibliographic-roles-v1.json').read_bytes())
+        self.profile = json.loads((Path(__file__).resolve().parent / 'fixtures/bibliographic-roles-v1.json').read_bytes())
         (self.root/'mapping.json').write_text(p.compact(self.profile))
         (self.root/'errors.jsonl').touch()
         self.part = 'data/part-000001.jsonl'
@@ -78,7 +78,7 @@ class PackageTest(unittest.TestCase):
         self.assertEqual(json.loads((second/'manifest.json').read_text())['countsByNetwork']['AR']['title.missing'],1)
 
     def test_new_annotated_keywords_are_kept_out_of_consumer_texts(self):
-        from examples.build_inputs import build_inputs
+        from lareferencia_embedding_metadata.examples.build_inputs import build_inputs
 
         self.rows = self.rows[:1]
         with sqlite3.connect(self.root/'records.sqlite') as con:

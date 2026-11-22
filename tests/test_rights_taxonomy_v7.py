@@ -1,6 +1,6 @@
 import unittest
 
-from normalize_rights import normalize_rights
+from lareferencia_metadata_tools.normalize_rights import normalize_rights
 
 
 class TaxonomyV7Tests(unittest.TestCase):

@@ -52,10 +52,14 @@ def build_inputs(package, classified_only=False):
                            "text": "\n\n".join(paragraphs)}
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package", type=Path)
     parser.add_argument("--classified-only", action="store_true")
     args = parser.parse_args()
     for result in build_inputs(args.package, args.classified_only):
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    main()

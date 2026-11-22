@@ -5,6 +5,7 @@ from collections import Counter
 from datetime import datetime, timezone
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import shutil
@@ -12,12 +13,13 @@ import sqlite3
 import subprocess
 import uuid
 
-from build_rights_enrichment import rights_fields, reference
-from count_export_licenses import EXCLUDED_VOCABULARIES, is_web_url
+from .build_rights_enrichment import rights_fields, reference
+from .count_export_licenses import EXCLUDED_VOCABULARIES, is_web_url
+import enrichment_package
 from enrichment_package import publish, upsert_batch
 from enrichment_package.store import digest
-from normalize_rights import normalize_rights
-from rights_export import RightsExport
+from .normalize_rights import normalize_rights
+from .rights_export import RightsExport
 
 LOG = logging.getLogger(__name__)
 
@@ -25,13 +27,29 @@ LOG = logging.getLogger(__name__)
 def code_provenance():
     """Include source hashes so an uncommitted checkout remains reproducible."""
     tools = Path(__file__).resolve().parent
-    paths = list(tools.glob('*.py')) + list((tools / 'enrichment_package').glob('*'))
-    return {str(p.relative_to(tools)): digest(p) for p in sorted(paths)
-            if p.is_file() and p.suffix in ('.py', '.sql')}
+    package = Path(enrichment_package.__file__).resolve().parent
+    hashes = {p.name: digest(p) for p in sorted(tools.glob('*.py'))}
+    hashes.update({f'enrichment_package/{p.name}': digest(p) for p in sorted(package.iterdir())
+                   if p.suffix in ('.py', '.sql')})
+    return hashes
+
+
+def resolve_shell(explicit):
+    if explicit is not None:
+        return explicit.resolve()
+    configured = os.environ.get('LR_SHELL_DIR')
+    if configured:
+        return Path(configured).resolve()
+    working = Path.cwd()
+    for root in (working, *working.parents, *Path(__file__).resolve().parents):
+        shell = root / 'lareferencia-shell'
+        if (shell / 'lareferencia-shell.jar').is_file():
+            return shell
+    raise ValueError('Set --shell-dir or LR_SHELL_DIR to the configured Java shell installation')
 
 
 def export_lgk(args, directory):
-    shell = args.shell_dir.resolve()
+    shell = resolve_shell(args.shell_dir)
     inputs = directory / 'inputs'
     inputs.mkdir()
     jar = inputs / 'lareferencia-shell.jar'
@@ -110,8 +128,7 @@ def main():
     parser.add_argument('--network', required=True)
     parser.add_argument('--output', type=Path, default=Path('/srv/metadata-enrichments'))
     parser.add_argument('--export-dir', type=Path)
-    parser.add_argument('--shell-dir', type=Path,
-                        default=Path(__file__).resolve().parents[2])
+    parser.add_argument('--shell-dir', type=Path)
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', args.network):
         parser.error('Invalid network acronym')

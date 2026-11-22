@@ -2,13 +2,11 @@ import argparse
 import gzip
 import json
 from pathlib import Path
-import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import compute_metadata_embeddings as compute
+from lareferencia_metadata_tools import compute_metadata_embeddings as compute
 
 
 class PreparedInputTest(unittest.TestCase):

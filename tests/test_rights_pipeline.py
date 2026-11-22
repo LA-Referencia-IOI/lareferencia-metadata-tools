@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from enrichment_package import lookup
 from enrichment_package.store import digest
-from run_rights_pipeline import main, run_pipeline
+from lareferencia_metadata_tools.run_rights_pipeline import resolve_shell, run_pipeline
 
 
 class PipelineTest(unittest.TestCase):
@@ -20,7 +20,7 @@ class PipelineTest(unittest.TestCase):
         self.root = Path(temp.name)
         self.export = self.root / 'export'
         (self.export / 'PY').mkdir(parents=True)
-        profile = Path(__file__).resolve().parents[2] / 'config/exports/licenses-v1.json'
+        profile = Path(__file__).resolve().parent / 'fixtures/licenses-v1.json'
         (self.export / 'mapping.json').write_bytes(profile.read_bytes())
         self.rows = [
             dict(network='PY',catalogId='one',identifier='oai:one',metadataHash='abc',data={
@@ -57,13 +57,20 @@ class PipelineTest(unittest.TestCase):
         directory.mkdir()
         return run_pipeline(Namespace(network='PY',export_dir=self.export),directory)
 
-    def test_cli_default_shell_is_its_own_checkout(self):
-        arguments = ['run_rights_pipeline.py', '--network', 'PY', '--output', str(self.root / 'output')]
-        with patch('sys.argv', arguments), patch('run_rights_pipeline.run_pipeline', return_value={}) as run:
-            with patch('run_rights_pipeline.logging.basicConfig'), patch('builtins.print'):
-                main()
-        args, _ = run.call_args.args
-        self.assertEqual(args.shell_dir, Path(__file__).resolve().parents[2])
+    def test_shell_resolution_order(self):
+        shell = self.root / 'lareferencia-shell'
+        shell.mkdir()
+        (shell / 'lareferencia-shell.jar').touch()
+        work = self.root / 'lareferencia-metadata-tools'
+        work.mkdir()
+        configured = self.root / 'configured'
+        explicit = self.root / 'explicit'
+        with patch('pathlib.Path.cwd', return_value=work):
+            with patch.dict('os.environ', {'LR_SHELL_DIR': str(configured)}):
+                self.assertEqual(resolve_shell(explicit), explicit.resolve())
+                self.assertEqual(resolve_shell(None), configured.resolve())
+            with patch.dict('os.environ', clear=True):
+                self.assertEqual(resolve_shell(None), shell)
 
     def test_complete_and_repeated_export(self):
         for name in ('a','b'):

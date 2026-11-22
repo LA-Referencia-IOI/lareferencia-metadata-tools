@@ -7,8 +7,8 @@ from pathlib import Path
 import re
 import sys
 
-from cc_license_fragments import resolve_pending_cc, apply_structural_repairs, apply_url_priority, apply_ordered_name, declaration_fallback, detect, fallback, reference_subtype, review_reference
-from normalize_cc_licenses import normalize, plain
+from .cc_license_fragments import resolve_pending_cc, apply_structural_repairs, apply_url_priority, apply_ordered_name, declaration_fallback, detect, fallback, reference_subtype, review_reference
+from .normalize_cc_licenses import normalize, plain
 
 
 ACCESS = re.compile(

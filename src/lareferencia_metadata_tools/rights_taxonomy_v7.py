@@ -1,6 +1,6 @@
 """Project recognized v6 rights into nine reporting families."""
 import re
-from normalize_cc_licenses import plain
+from .normalize_cc_licenses import plain
 
 FAMILIES = ('CC', 'SOFTWARE', 'DATA', 'INSTITUTIONAL', 'EDITORIAL', 'PUBLIC-DOMAIN',
             'RE', 'Copyright', 'OTHER-LICENSE')

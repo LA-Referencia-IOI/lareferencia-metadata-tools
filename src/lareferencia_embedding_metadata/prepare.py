@@ -270,7 +270,7 @@ def prepare(root, output, models, *, combine=False, include_provenance=False):
                 "sources": parent["sources"], "skippedSources": parent.get("skippedSources", []),
             }
             manifest["processor"] = {
-                "name": "prepare-embedding-metadata", "version": version("lareferencia-embedding-metadata"),
+                "name": "prepare-embedding-metadata", "version": version("lareferencia-metadata-tools"),
                 "fasttext": version("fasttext"), "modelHashes": {"language": postprocess.sha(language), "role": postprocess.sha(role)},
             }
         (dest / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

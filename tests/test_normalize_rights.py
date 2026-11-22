@@ -1,7 +1,7 @@
 import unittest
 
-from normalize_rights import normalize_rights, item_families
-from rights_taxonomy_v7 import FAMILIES
+from lareferencia_metadata_tools.normalize_rights import normalize_rights, item_families
+from lareferencia_metadata_tools.rights_taxonomy_v7 import FAMILIES
 
 
 class RightsContractTests(unittest.TestCase):

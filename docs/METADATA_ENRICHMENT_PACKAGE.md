@@ -7,7 +7,7 @@ A package contains results for one network, snapshot and input variant. Independ
 The command exports the current LGK, builds a dictionary for that cut using taxonomy v7, generates item fields, verifies the results and publishes an edition.
 
 ```sh
-python3 tools/metadata-enrichment/run_rights_pipeline.py --network PY
+run-rights-pipeline --network PY
 ```
 
 The default shell directory is the root of this shell checkout. Override it with `--shell-dir /path/to/lareferencia-shell`. Java runs with that directory as its working directory to use the installation's configuration. Each fresh export uses a private copy of the executable JAR and extraction profile. Keep the source checkout stable throughout a run.
@@ -25,7 +25,7 @@ The default output root is `/srv/metadata-enrichments`. The operator must have w
 A completed export can be processed again without another LGK export:
 
 ```sh
-python3 tools/metadata-enrichment/run_rights_pipeline.py --network PY \
+run-rights-pipeline --network PY \
   --export-dir /srv/metadata-enrichments/PY/run-UUID/exports/exp-UUID
 ```
 
@@ -36,7 +36,7 @@ The dictionary retains the inventory filters: omit empty strings, COAR and info:
 Run disconnected from SSH using the server's existing process tools. For example:
 
 ```sh
-nohup python3 tools/metadata-enrichment/run_rights_pipeline.py --network PY \
+nohup run-rights-pipeline --network PY \
   > /srv/metadata-enrichments/py-launch.log 2>&1 < /dev/null &
 tail -f /srv/metadata-enrichments/py-launch.log
 ```
@@ -61,7 +61,7 @@ The lower-level `build_rights_enrichment.py` command remains available for expli
 
 ## Add other producers
 
-The Python API is `upsert_batch(database, run, items)` from `enrichment_package`, with `tools/metadata-enrichment/` on the module path. Each item supplies `catalogId`, `identifier`, `metadataHash`, `generatedAt` and `fields`, optionally `sourceRef`. Each occurrence has a textual `value` and optional JSON attributes.
+The Python API is `upsert_batch(database, run, items)` from `enrichment_package`, from the installed package. Each item supplies `catalogId`, `identifier`, `metadataHash`, `generatedAt` and `fields`, optionally `sourceRef`. Each occurrence has a textual `value` and optional JSON attributes.
 
 External producers can use the [v2 enrichment return](https://github.com/lareferencia/lareferencia-platform/blob/main/docs/METADATA_EXCHANGE_FORMAT.md#8-contrato-para-devolver-enriquecimientos). A run descriptor might contain:
 
@@ -76,10 +76,10 @@ A matching return line could contain:
 ```
 
 ```sh
-python3 tools/metadata-enrichment/enrichments.py ingest work.sqlite ods.jsonl --run ods-run.json
-python3 tools/metadata-enrichment/enrichments.py publish work.sqlite edition-001
-python3 tools/metadata-enrichment/enrichments.py lookup edition-001/enrichments.sqlite --catalog-id item-001
-python3 tools/metadata-enrichment/enrichments.py lookup edition-001/enrichments.sqlite --identifier oai:example:1
+enrichments ingest work.sqlite ods.jsonl --run ods-run.json
+enrichments publish work.sqlite edition-001
+enrichments lookup edition-001/enrichments.sqlite --catalog-id item-001
+enrichments lookup edition-001/enrichments.sqlite --identifier oai:example:1
 ```
 
 Ingestion accepts JSONL and JSONL.GZ. A call commits its iterable atomically. A failed or interrupted batch rolls back. Separate files can serve as batches within an immutable run descriptor. Publish after all intended batches complete. Each result replaces the producer's entire contribution to that item. Empty `fields` records an evaluated empty result. Omitted items retain their previous results. A new run ID permits new provenance. Identity or input-hash conflicts reject the batch. The most recently committed result for each item and producer is current.
@@ -100,7 +100,7 @@ it to `facetas.sqlite`. Keep the delivery manifest beside it as
 
 `lookup` uses indexes on catalog ID or OAI identifier and returns the input identity, hash and fields grouped by producer. Unknown or ambiguous identifiers fail explicitly. A consumer must compare identity, variant and metadata hash before applying results.
 
-The [SQLite schema](../tools/metadata-enrichment/enrichment_package/schema.sql) defines items, runs, producer results and shared occurrences. Read clients should open with `mode=ro`. Publishing uses SQLite backup, integrity checks and a sealed database, with its size and SHA-256 recorded in the manifest. Manifest occurrence counts represent item-result links.
+The [SQLite schema](../src/enrichment_package/schema.sql) defines items, runs, producer results and shared occurrences. Read clients should open with `mode=ro`. Publishing uses SQLite backup, integrity checks and a sealed database, with its size and SHA-256 recorded in the manifest. Manifest occurrence counts represent item-result links.
 
 For facet counts using SQLite JSON functions:
 
@@ -122,8 +122,8 @@ The same Python library publishes standalone vector editions from COMPLETE
 Each edition contains `embeddings.sqlite` and `manifest.json`.
 
 ```sh
-python3 tools/metadata-enrichment/enrichments.py pack-vectors /path/to/vector-package /path/to/new-edition
-python3 tools/metadata-enrichment/enrichments.py lookup-vector /path/to/new-edition/embeddings.sqlite --network AR --catalog-id ITEM_ID
+enrichments pack-vectors /path/to/vector-package /path/to/new-edition
+enrichments lookup-vector /path/to/new-edition/embeddings.sqlite --network AR --catalog-id ITEM_ID
 ```
 
 The converter verifies part hashes, sizes, counts, dimensions and unique

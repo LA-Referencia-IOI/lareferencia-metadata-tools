@@ -5,10 +5,10 @@ import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 
-from build_rights_enrichment import COPYRIGHT, L1, L2, rights_fields, license_facets
+from lareferencia_metadata_tools.build_rights_enrichment import COPYRIGHT, L1, L2, rights_fields, license_facets
 from enrichment_package import lookup, publish, upsert_batch
 from enrichment_package.store import digest
-from enrichments import read_returns
+from lareferencia_metadata_tools.enrichments import read_returns
 
 
 class PackageTest(unittest.TestCase):

@@ -10,11 +10,11 @@ Probado con Python 3.12. La descarga del modelo de idioma se realiza una sola ve
 
 ```sh
 python3.12 -m venv .venv
-.venv/bin/pip install numpy==1.26.4 fasttext==0.9.3
+.venv/bin/pip install ".[bibliographic]"
 curl -fL https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.ftz -o lid.176.ftz
 
-.venv/bin/python tools/embedding-metadata/train.py /exports/exp-AR /exports/exp-UY --output modelos-piloto
-.venv/bin/python tools/embedding-metadata/postprocess.py /exports/exp-AR /exports/exp-UY \
+.venv/bin/train-embedding-metadata /exports/exp-AR /exports/exp-UY --output modelos-piloto
+.venv/bin/postprocess-embedding-metadata /exports/exp-AR /exports/exp-UY \
   --language-model lid.176.ftz --role-model modelos-piloto/role.bin --output resultados
 ```
 

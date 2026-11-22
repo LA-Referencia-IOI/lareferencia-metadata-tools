@@ -2,7 +2,7 @@
 
 import re
 
-from normalize_cc_licenses import (
+from .normalize_cc_licenses import (
     ATTRIBUTION, FAMILIES, JURISDICTIONS, PORT_CODES, TERMS, VERSIONS, from_url, plain,
 )
 

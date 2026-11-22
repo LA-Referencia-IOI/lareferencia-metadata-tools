@@ -2,7 +2,7 @@ import unittest
 from collections import Counter, defaultdict
 from unittest.mock import Mock
 
-from postprocess import Annotator, select_record_abstract
+from lareferencia_embedding_metadata.postprocess import Annotator, select_record_abstract
 
 
 class AnnotatorTest(unittest.TestCase):
@@ -53,7 +53,7 @@ class AnnotatorTest(unittest.TestCase):
         self.assertEqual(self.annotator.annotate(row, "exp", defaultdict(Counter))["documentTypes"][0]["type"], "masterThesis")
 
     def test_mixed_prose_and_negation(self):
-        from metadata_roles import describe
+        from lareferencia_embedding_metadata.metadata_roles import describe
         mixed = "This study investigates crop growth using three field trials. This work was funded by CAPES."
         self.assertEqual(describe({"value": mixed}, "abstract"), ("abstract", None, [("CAPES","funding_statement")]))
         self.assertFalse(describe({"value":"This work was not funded by CAPES."}, "uncertain")[2])
