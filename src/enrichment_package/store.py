@@ -4,6 +4,7 @@ import json
 import os
 from contextlib import closing
 from datetime import datetime
+from importlib.resources import files
 from pathlib import Path
 import re
 import shutil
@@ -107,7 +108,7 @@ def upsert_batch(path, run, items):
         db.execute('PRAGMA foreign_keys=ON')
         if db.execute('PRAGMA user_version').fetchone()[0] == 1:
             raise ValueError('Published editions are read-only')
-        db.executescript(Path(__file__).with_name('schema.sql').read_text())
+        db.executescript(files(__package__).joinpath('schema.sql').read_text(encoding='utf-8'))
         with db:
             db.execute('BEGIN IMMEDIATE')
             db.execute('INSERT OR IGNORE INTO package VALUES(1,1,?,?,?)', (network, snapshot, variant))

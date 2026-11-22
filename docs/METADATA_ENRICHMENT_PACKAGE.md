@@ -1,6 +1,6 @@
 # Metadata enrichment packages
 
-A package contains results for one network, snapshot and input variant. Independent producers can update a working SQLite database in successive transactions. Publishing creates a standalone edition containing `enrichments.sqlite` and `manifest.json`. Python 3.9 or newer and the standard library are sufficient. Run commands from the shell checkout root.
+A package contains results for one network, snapshot and input variant. Independent producers can update a working SQLite database in successive transactions. Publishing creates a standalone edition containing `enrichments.sqlite` and `manifest.json`. Python 3.9 or newer and the standard library are sufficient. Install the base package in a virtual environment and run the commands from that environment.
 
 ## Run the rights pipeline on the harvester server
 
@@ -10,7 +10,7 @@ The command exports the current LGK, builds a dictionary for that cut using taxo
 run-rights-pipeline --network PY
 ```
 
-The default shell directory is the root of this shell checkout. Override it with `--shell-dir /path/to/lareferencia-shell`. Java runs with that directory as its working directory to use the installation's configuration. Each fresh export uses a private copy of the executable JAR and extraction profile. Keep the source checkout stable throughout a run.
+For a fresh export, use `--shell-dir /path/to/lareferencia-shell`, set `LR_SHELL_DIR`, or run from the platform checkout with a built sibling shell. Java runs with that directory as its working directory to use the installation's configuration. Each fresh export uses a private copy of the executable JAR and extraction profile. Keep the source checkout stable throughout a run.
 
 The default output root is `/srv/metadata-enrichments`. The operator must have write access. Override it with `--output /path/to/output`. Every invocation creates a new `<network>/run-<uuid>/` directory containing:
 
