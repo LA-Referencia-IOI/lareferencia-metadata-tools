@@ -63,3 +63,12 @@ Run the preparer tests from this repository after installing the package.
 ```sh
 .venv/bin/python -m unittest discover -s tests
 ```
+
+## Batch output dimensions
+
+`compute-metadata-embeddings --dimensions` accepts 768, 512 or 256 and defaults to 768.
+The batch calculator takes the first requested components and L2-normalizes
+the resulting vector in float32. The output profile records the original and
+resulting dimensions and the reduction method. Reduced dimensions add a
+suffix to the default recipe ID. Set a distinct explicit `--recipe-id` for
+each configuration if loading multiple dimensions into the same v2 service.

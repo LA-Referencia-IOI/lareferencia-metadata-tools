@@ -36,7 +36,7 @@ class PreparedInputTest(unittest.TestCase):
         }
         self.args = argparse.Namespace(source=self.root, output=self.output, revision="f" * 40,
                                        on_overflow=None, recipe_id=None, chunk_size=2,
-                                       max_tokens=32, batch_size=2, dtype="float32", device="cpu")
+                                       dimensions=768, max_tokens=32, batch_size=2, dtype="float32", device="cpu")
         self.manifest_file = self.root / "manifest.json"
 
     def test_sends_literal_text_and_keeps_vector_order(self):
@@ -64,6 +64,22 @@ class PreparedInputTest(unittest.TestCase):
             vectors = [json.loads(line) for line in source]
         self.assertEqual(vectors, [{"network": row["network"], "catalogId": row["catalogId"], "vector": [1.0, 0.0]}
                                    for row in self.inputs])
+
+    def test_reduced_dimensions_are_recorded_and_suffix_recipe(self):
+        self.args.dimensions = 256
+        self.manifest_file.write_text(json.dumps(self.manifest))
+        encoder = Mock(versions={})
+        encoder.encode.side_effect = lambda texts: (
+            [Mock(tolist=lambda: [1.0] + [0.0] * 255) for _ in texts], []
+        )
+        with patch.object(compute, "Encoder", return_value=encoder):
+            compute.build(self.args)
+        result = json.loads((self.output / "manifest.json").read_bytes())
+        profile = result["embeddings"][0]
+        self.assertEqual(profile["id"], "combined-v1-256d")
+        self.assertEqual(profile["dimensions"], 256)
+        self.assertEqual(profile["nativeDimensions"], 768)
+        self.assertEqual(profile["dimensionReduction"], "matryoshka-prefix")
 
     def test_invalid_data_checksum_prevents_publication(self):
         self.manifest_file.write_text(json.dumps(self.manifest))

@@ -20,6 +20,7 @@ MODEL_ID = "google/embeddinggemma-2"
 DOCUMENT_TEMPLATE = "title: {title} | text: {text}"
 QUERY_TEMPLATE = "task: search result | query: {query}"
 DIMENSIONS = 768
+SUPPORTED_DIMENSIONS = (256, 512, DIMENSIONS)
 
 
 def file_entry(path):
@@ -138,7 +139,7 @@ class Encoder:
                 texts[index], counts[index] = self.truncate(texts[index])
                 truncated.append((index, count, counts[index]))
         order = sorted(range(len(texts)), key=counts.__getitem__)
-        vectors = np.empty((len(texts), DIMENSIONS), dtype=np.float32)
+        vectors = np.empty((len(texts), self.args.dimensions), dtype=np.float32)
         start = 0
         while start < len(order):
             length = counts[order[start]]
@@ -156,6 +157,7 @@ class Encoder:
             batch = np.asarray(raw, dtype=np.float32)
             if batch.shape != (len(indices), DIMENSIONS) or not np.isfinite(batch).all():
                 raise ValueError("El modelo devolvió vectores inválidos")
+            batch = batch[:, :self.args.dimensions]
             norms = np.linalg.norm(batch, axis=1, keepdims=True)
             if np.any(norms <= 0) or not np.isfinite(norms).all():
                 raise ValueError("El modelo devolvió una norma inválida")
@@ -273,6 +275,9 @@ def build(args):
         args.on_overflow = "truncate" if prepared else "error"
     if args.recipe_id is None:
         args.recipe_id = manifest["recipe"] if prepared else "title-abstract"
+        if args.dimensions != DIMENSIONS:
+            suffix = f"-{args.dimensions}d"
+            args.recipe_id = args.recipe_id[:100 - len(suffix)] + suffix
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,99}", args.recipe_id):
         raise ValueError("Invalid embedding recipe ID")
 
@@ -317,7 +322,9 @@ def build(args):
             },
             "embeddings": [{
                 "id": args.recipe_id, "model": MODEL_ID, "revision": args.revision,
-                "dimensions": DIMENSIONS, "inferenceDtype": args.dtype, "outputDtype": "float32",
+                "dimensions": args.dimensions, "nativeDimensions": DIMENSIONS,
+                "dimensionReduction": "matryoshka-prefix" if args.dimensions != DIMENSIONS else "none",
+                "inferenceDtype": args.dtype, "outputDtype": "float32",
                 "normalization": "l2", "maxTokens": args.max_tokens, "onOverflow": args.on_overflow,
                 "input": {"textField": "text", "preparationRecipe": manifest["recipe"], "queryTemplate": QUERY_TEMPLATE}
                 if prepared else {
@@ -358,6 +365,7 @@ def parse_args():
                         help="Primer componente del qualifier. Usa una cadena vacía para un campo dedicado a abstracts")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", choices=("bfloat16", "float32"), default="bfloat16")
+    parser.add_argument("--dimensions", type=int, choices=SUPPORTED_DIMENSIONS, default=DIMENSIONS)
     parser.add_argument("--max-tokens", type=int, default=8192)
     parser.add_argument("--on-overflow", choices=("error", "truncate"),
                         help="Token overflow policy (default: truncate for prepared texts, error for metadata exports)")
