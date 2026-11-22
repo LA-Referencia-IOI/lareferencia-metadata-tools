@@ -35,7 +35,16 @@ Add `--include-provenance` to produce `provenance.jsonl.gz`. The sidecar uses `(
 
 ## Calculate vectors
 
-Use the batch calculator from the embedding-service repository. Pass the prepared package directory reported by Python. Pin a model revision available in the GPU environment.
+Install the `inference` extra of this module on the machine that runs the
+encoder. Use the same module revision as for preparation. Pass the complete
+`embedding-inputs` directory reported by `prepare-embedding-metadata` and pin a
+model revision available to the inference environment.
+
+```sh
+python3.12 -m venv .venv-inference
+. .venv-inference/bin/activate
+python -m pip install '.[inference]'
+```
 
 ```sh
 compute-metadata-embeddings \
@@ -43,6 +52,18 @@ compute-metadata-embeddings \
 ```
 
 The calculator verifies the data checksums and encodes the supplied text. It emits one row containing `network`, `catalogId` and `vector` per input row. The default overflow policy for this format truncates the encoder input and records the part, line and token counts in the vector manifest. Use `--on-overflow error` to reject oversize inputs. The prepared text stays complete on disk.
+
+## Pack the vectors
+
+Pass the completed vector directory to `enrichments` from an environment
+with the base package installed. Choose a new directory for the SQLite edition.
+
+```sh
+enrichments pack-vectors "$VECTOR_DIR" "$SQLITE_EDITION_DIR"
+```
+
+Retain the prepared package and the original export for provenance.
+[SQLite vector contract](METADATA_ENRICHMENT_PACKAGE.md#pack-calculated-embeddings-in-sqlite).
 
 ## Annotated metadata and per-language texts
 

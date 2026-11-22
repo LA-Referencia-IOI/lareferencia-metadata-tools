@@ -4,10 +4,13 @@ A package contains results for one network, snapshot and input variant. Independ
 
 ## Run the rights pipeline on the harvester server
 
-The command exports the current LGK, builds a dictionary for that cut using taxonomy v7, generates item fields, verifies the results and publishes an edition.
+Install the base package following the [installation guide](../README.md#installation).
+The installed command can call the Java shell to export the current LGK. It
+builds a dictionary for that cut using taxonomy v7, generates item fields,
+verifies the results and publishes an edition.
 
 ```sh
-run-rights-pipeline --network PY
+run-rights-pipeline --network PY --shell-dir "$SHELL_DIR"
 ```
 
 For a fresh export, use `--shell-dir /path/to/lareferencia-shell`, set `LR_SHELL_DIR`, or run from the platform checkout with a built sibling shell. Java runs with that directory as its working directory to use the installation's configuration. Each fresh export uses a private copy of the executable JAR and extraction profile. Keep the source checkout stable throughout a run.
@@ -36,7 +39,7 @@ The dictionary retains the inventory filters: omit empty strings, COAR and info:
 Run disconnected from SSH using the server's existing process tools. For example:
 
 ```sh
-nohup run-rights-pipeline --network PY \
+nohup run-rights-pipeline --network PY --shell-dir "$SHELL_DIR" \
   > /srv/metadata-enrichments/py-launch.log 2>&1 < /dev/null &
 tail -f /srv/metadata-enrichments/py-launch.log
 ```

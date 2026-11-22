@@ -7,15 +7,24 @@ PEP 440, so platform version `5.0.0-rc4` is wheel version `5.0.0rc4`.
 
 ## Installation
 
-Create a virtual environment with Python 3.12 or later. The rights and SQLite
-commands use the standard library.
-Install the extras required on each machine.
+Use the module revision pinned in the platform's `workspace.lock`. In a Git
+checkout, `githelper init` prepares the workspace. The platform release ZIP
+already contains the sources. Use the same revision on the harvester, the
+metadata processing host and the inference host.
+
+From the root of this module, create and activate a virtual environment with
+Python 3.12 or later.
 
 ```sh
+python3.12 -m venv .venv
+. .venv/bin/activate
 python -m pip install .
-python -m pip install '.[bibliographic]'
-python -m pip install '.[inference]'
 ```
+
+Use the base install for rights and SQLite. For bibliographic preparation,
+install `python -m pip install '.[bibliographic]'`. For batch inference,
+install `python -m pip install '.[inference]'` on the inference host. Run the
+commands from the activated environment or use their paths under `.venv/bin/`.
 
 Install the appropriate PyTorch build for the target CPU or CUDA environment.
 Provision fastText and Gemma models separately. See the
@@ -24,7 +33,12 @@ Provision fastText and Gemma models separately. See the
 
 ## Commands
 
-- Export metadata with the Java shell and its maintained profiles.
+- Export metadata with the Java shell and its maintained profiles. Pass the
+  complete `exp-…` directory, including its manifest, mapping, data parts and
+  index, to the Python commands.
+- Use `count-export-licenses` to produce an inventory of the original values
+  and `normalize-rights` to normalize it.
+  [License inventory guide](docs/LICENSE_METADATA_EXTRACTION.md).
 - Run `run-rights-pipeline --network AR --export-dir /path/to/export` to
   publish a rights edition. To export a fresh LGK, supply `--shell-dir` or
   `LR_SHELL_DIR`. From a platform checkout the sibling shell is discovered.
