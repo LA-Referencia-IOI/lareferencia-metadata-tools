@@ -100,9 +100,13 @@ def train(packages, output):
     print({k:v for k,v in summary.items() if k!="repositories"})
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("packages", type=Path, nargs="+")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     train(args.packages, args.output)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -232,7 +232,7 @@ def process(package, output, language_model, role_model):
     print(json.dumps(summary, ensure_ascii=False), flush=True)
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("packages", nargs="+", type=Path)
     parser.add_argument("--language-model", required=True, type=Path)
@@ -241,3 +241,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     for package in args.packages:
         process(package, args.output, args.language_model, args.role_model)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
