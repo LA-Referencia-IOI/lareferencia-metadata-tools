@@ -16,7 +16,7 @@ from rights_catalog import RECOGNITION_CODES, INSTRUMENTS, NAMES, SLUGS, URLS, S
 
 NOTICE_LABEL = re.compile(
     r"^(?:©|&copy;|\(c\)|copyright\b(?![- ]free\b|\s+(?:expired|waived)\b)|"
-    r"direitos (?:autorais|de autor)\b|"
+    r"derechos de autor\b|direitos (?:autorais|de autor)\b|"
     r"(?:(?:todos (?:los|os)|algunos|algun|alguns|algum) )?"
     r"(?:derechos? reservados?|direitos? reservados?)\b|"
     r"reserva de (?:todos los|algunos) derechos\b|(?:all|some) rights reserved\b|"

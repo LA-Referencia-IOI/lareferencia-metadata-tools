@@ -58,6 +58,15 @@ class RightsContractTests(unittest.TestCase):
         self.assertEqual(item_families(["Copyright", "CC", "RE"]), {"Copyright", "CC", "RE"})
         self.assertEqual(item_families(["Copyright", "Copyright"]), {"Copyright"})
 
+    def test_spanish_author_rights_notice(self):
+        for value in ("Derechos de autor 2018 Tópicos. Revista de Filosofía de Santa Fe",
+                      "  DERECHOS DE AUTOR 2021 Autora  "):
+            with self.subTest(value=value):
+                entry = normalize_rights(value)["licenses"][0]
+                self.assertEqual((entry["family"], entry["instrument"], entry["kind"]),
+                                 ("Copyright", "NOTICE", "copyright_notice"))
+        self.assertFalse(normalize_rights("Sin derechos de autor")["licenses"])
+
     def test_context(self):
         row = normalize_rights("codi: GPL (c) Autor, 2025")
         self.assertEqual(row["licenses"][0]["scope"], "code")
