@@ -44,11 +44,12 @@ Provision fastText and Gemma models separately. See the
   `LR_SHELL_DIR`. From a platform checkout the sibling shell is discovered.
   See the [enrichment package guide](docs/METADATA_ENRICHMENT_PACKAGE.md).
 - Run `prepare-embedding-metadata --combine` to produce a portable text package.
-- Run `compute-metadata-embeddings INPUT OUTPUT --revision REVISION` locally
-  on CPU or GPU. The command accepts prepared text packages and the historical
-  Java JSONL export mode.
-- Run `enrichments pack-vectors VECTORS EDITION` to publish `embeddings.sqlite`.
-  Use `enrichments lookup-vector` to resolve a vector by network and catalog ID.
+- Run `compute-metadata-embeddings INPUT OUTPUT --revision REVISION --format sqlite`
+  to calculate directly into an SQLite edition. Use `--format jsonl` for GZIP
+  JSONL, the default. Both accept prepared texts and complete Java JSONL exports.
+- Use `enrichments pack-vectors VECTORS EDITION` to convert an existing
+  `embedding-vectors` JSONL package. Use `enrichments lookup-vector` to resolve
+  a vector by network and catalog ID. [Output formats and provenance](docs/EMBEDDING_METADATA.md#calculate-vectors).
 
 Run the tests with `python -m unittest discover -s tests` in an environment
 with the bibliographic dependencies.

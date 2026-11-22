@@ -11,9 +11,12 @@ import re
 import shutil
 import sqlite3
 import tempfile
-from contextlib import closing, nullcontext
+from contextlib import closing, ExitStack, nullcontext
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path, PurePosixPath
+
+from enrichment_package.embeddings import DATABASE, VectorDatabase
 
 LOGGER = logging.getLogger("metadata_embeddings")
 MODEL_ID = "google/embeddinggemma-2"
@@ -166,7 +169,18 @@ class Encoder:
         return vectors, truncated
 
 
-def write_batch(stream, encoder, texts, source_file, first_line, truncations, identities):
+def write_jsonl_vector(stream, line, identity, vector):
+    if identity is None:
+        # Nine significant digits round-trip float32. Preserve signed zero too.
+        values = (format(value, ".9g") for value in vector)
+        stream.write("[[" + ",".join("-0.0" if value == "-0" else value for value in values) + "]]\n")
+    else:
+        network, catalog_id = identity
+        record = {"network": network, "catalogId": catalog_id, "vector": vector}
+        stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n")
+
+
+def write_batch(write_vector, encoder, texts, source_file, first_line, truncations, identities):
     try:
         vectors, truncated = encoder.encode(texts)
     except (RuntimeError, ValueError) as exc:
@@ -176,36 +190,40 @@ def write_batch(stream, encoder, texts, source_file, first_line, truncations, id
         truncations.append({"sourceFile": source_file, "sourceLine": line,
                             "sourceTokens": source_tokens, "encodedTokens": encoded_tokens})
         LOGGER.info("Recorte de entrada %s:%d (%d → %d tokens)", source_file, line, source_tokens, encoded_tokens)
+    if len(vectors) != len(texts):
+        raise ValueError(f"{source_file}:{first_line}: el modelo no devolvió un vector por texto")
     for index, vector in enumerate(vectors):
-        if identities is None:
-            # Nine significant digits round-trip float32. Preserve signed zero too.
-            values = (format(value, ".9g") for value in vector.tolist())
-            stream.write("[[" + ",".join("-0.0" if value == "-0" else value for value in values) + "]]\n")
-        else:
-            network, catalog_id = identities[index]
-            record = {"network": network, "catalogId": catalog_id, "vector": vector.tolist()}
-            stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n")
+        line = first_line + index
+        identity = identities[index] if identities is not None else None
+        try:
+            write_vector(line, identity, vector.tolist())
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            raise ValueError(f"{source_file}:{line}: {exc}") from exc
 
 
-def write_part(source_path, source_file, destination, index_rows, encoder, args, truncations):
+def write_part(source_path, source_file, destination, index_rows, encoder, args, truncations, *, sqlite_write=None):
     count = with_abstract = 0
     texts = []
-    identities = [] if index_rows is None else None
+    identities = [] if index_rows is None or sqlite_write is not None else None
     read = gzip.open if source_file.endswith(".gz") else open
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with read(source_path, "rt", encoding="utf-8") as source, gzip.open(destination, "wt", encoding="utf-8", compresslevel=3) as output:
+    output_file = nullcontext()
+    if sqlite_write is None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        output_file = gzip.open(destination, "wt", encoding="utf-8", compresslevel=3)
+    with output_file as output, read(source_path, "rt", encoding="utf-8") as source:
+        write_vector = sqlite_write if sqlite_write is not None else partial(write_jsonl_vector, output)
         for count, line in enumerate(source, 1):
             try:
                 record = json.loads(line)
-                if identities is None:
-                    identity = (source_file, count, record["network"], record["catalogId"], record["identifier"], record["metadataHash"])
-                    if next(index_rows, None) != identity:
+                identity = (record["network"], record["catalogId"])
+                if index_rows is not None:
+                    if next(index_rows, None) != (source_file, count, *identity, record["identifier"], record["metadataHash"]):
                         raise ValueError("La posición, identidad o hash no coincide con records.sqlite")
                     text, has_abstract = input_text(record, args)
                     with_abstract += has_abstract
                 else:
-                    identity = (record["network"], record["catalogId"])
                     text = record["text"]
+                if identities is not None:
                     if not all(isinstance(value, str) and value.strip() for value in (*identity, text)):
                         raise ValueError("Expected nonblank network, catalogId and text")
                     identities.append(identity)
@@ -213,12 +231,12 @@ def write_part(source_path, source_file, destination, index_rows, encoder, args,
                 raise ValueError(f"{source_file}:{count}: {exc}") from exc
             texts.append(text)
             if len(texts) == args.chunk_size:
-                write_batch(output, encoder, texts, source_file, count - len(texts) + 1, truncations, identities)
+                write_batch(write_vector, encoder, texts, source_file, count - len(texts) + 1, truncations, identities)
                 texts.clear()
                 if identities is not None:
                     identities.clear()
         if texts:
-            write_batch(output, encoder, texts, source_file, count - len(texts) + 1, truncations, identities)
+            write_batch(write_vector, encoder, texts, source_file, count - len(texts) + 1, truncations, identities)
     return count, with_abstract
 
 
@@ -237,9 +255,10 @@ def indexed_rows(database, manifest):
 
 def build(args):
     source = args.source.resolve(strict=True)
-    output = args.output.resolve()
-    if output.exists() or output.is_relative_to(source):
+    output = args.output.absolute()
+    if output.is_symlink() or output.exists() or output.resolve().is_relative_to(source):
         raise ValueError("La salida debe ser una carpeta nueva fuera del paquete de origen")
+    output = output.resolve()
     manifest_path = package_file(source, "manifest.json")
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes)
@@ -286,65 +305,82 @@ def build(args):
     lock.mkdir()
     stage = None
     try:
-        if output.exists():
+        if output.exists() or output.is_symlink():
             raise ValueError(f"Ya existe {output}")
         stage = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
         truncations = []
         encoder = Encoder(args) if parts else None
-        index = closing(sqlite3.connect(index_path.as_uri() + "?mode=ro&immutable=1", uri=True)) if index_path else nullcontext()
-        with index as database:
+        with ExitStack() as resources:
+            database = resources.enter_context(closing(sqlite3.connect(
+                index_path.as_uri() + "?mode=ro&immutable=1", uri=True))) if index_path else None
+            edition = resources.enter_context(closing(sqlite3.connect(stage / DATABASE))) if args.format == "sqlite" else None
+            writer = VectorDatabase(edition, args.dimensions) if edition is not None else None
             rows = indexed_rows(database, manifest)
             inventory = []
             total = with_abstract = 0
             for part in parts:
                 source_path = verify_file(source, files[part])
-                relative = part.removesuffix(".gz").removesuffix(".jsonl") + ".embeddings.jsonl.gz"
-                destination = stage / relative
-                if destination.exists():
-                    raise ValueError(f"Colisión de nombres de salida: {relative}")
-                count, abstracts = write_part(source_path, part, destination, rows, encoder, args, truncations)
+                metadata = {"sourceFile": part, "sourceSha256": files[part]["sha256"]}
+                if writer is None:
+                    relative = part.removesuffix(".gz").removesuffix(".jsonl") + ".embeddings.jsonl.gz"
+                    destination = stage / relative
+                    if destination.exists():
+                        raise ValueError(f"Colisión de nombres de salida: {relative}")
+                    count, abstracts = write_part(source_path, part, destination, rows, encoder, args, truncations)
+                    metadata.update(file=relative, records=count, **file_entry(destination))
+                    LOGGER.info("%s %d registros", relative, count)
+                else:
+                    with edition:
+                        part_id = writer.start_part(metadata)
+                        count, abstracts = write_part(source_path, part, None, rows, encoder, args, truncations,
+                                                      sqlite_write=partial(writer.write_vector, part_id))
+                        metadata.update(records=count, sourceBytes=files[part]["bytes"])
+                        writer.finish_part(part_id, metadata)
+                    LOGGER.info("%s %d registros escritos en SQLite", part, count)
                 total += count
                 with_abstract += abstracts
-                inventory.append({
-                    "sourceFile": part, "sourceSha256": files[part]["sha256"],
-                    "file": relative, "records": count, **file_entry(destination),
-                })
-                LOGGER.info("%s %d registros", relative, count)
+                inventory.append(metadata)
             if total != expected or (rows is not None and next(rows, None) is not None):
                 raise ValueError("Input record counts do not reconcile")
-        result = {
-            "formatVersion": 1, "type": "embedding-vectors" if prepared else "metadata-embeddings", "status": "COMPLETE",
-            "createdAt": datetime.now(timezone.utc).isoformat(), "format": "jsonl", "compression": "gzip",
-            "source": {"packageId": manifest["packageId"], "manifestSha256": "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()}
-            if prepared else {
-                "exportId": manifest["exportId"], "manifestSha256": "sha256:" + hashlib.sha256(manifest_bytes).hexdigest(),
-                "variant": manifest["options"]["variant"], "mappingHash": manifest.get("mappingHash"),
-            },
-            "embeddings": [{
-                "id": args.recipe_id, "model": MODEL_ID, "revision": args.revision,
-                "dimensions": args.dimensions, "nativeDimensions": DIMENSIONS,
-                "dimensionReduction": "matryoshka-prefix" if args.dimensions != DIMENSIONS else "none",
-                "inferenceDtype": args.dtype, "outputDtype": "float32",
-                "normalization": "l2", "maxTokens": args.max_tokens, "onOverflow": args.on_overflow,
-                "input": {"textField": "text", "preparationRecipe": manifest["recipe"], "queryTemplate": QUERY_TEMPLATE}
+            result = {
+                "formatVersion": 1, "type": "embedding-vectors" if prepared else "metadata-embeddings", "status": "COMPLETE",
+                "createdAt": datetime.now(timezone.utc).isoformat(), "format": "jsonl", "compression": "gzip",
+                "source": {"packageId": manifest["packageId"], "manifestSha256": "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()}
                 if prepared else {
-                    "titleField": args.title_field, "titleSelection": "first nonblank occurrence, trimmed",
-                    "abstractField": args.abstract_field, "abstractQualifierRoot": args.abstract_qualifier,
-                    "abstractSelection": (
-                        "all nonblank occurrences, trimmed, in source order" if args.abstract_qualifier is None else
-                        "nonblank occurrences, trimmed, in source order; qualifier root matched case-insensitively"
-                    ),
-                    "abstractSeparator": "\n\n", "fallback": "use title as text", "missingTitle": "none",
-                    "documentTemplate": DOCUMENT_TEMPLATE, "queryTemplate": QUERY_TEMPLATE,
+                    "exportId": manifest["exportId"], "manifestSha256": "sha256:" + hashlib.sha256(manifest_bytes).hexdigest(),
+                    "variant": manifest["options"]["variant"], "mappingHash": manifest.get("mappingHash"),
                 },
-            }],
-            "runtime": {"device": args.device, "batchSizeLimit": args.batch_size, **(encoder.versions if encoder else {})},
-            "counts": {"records": total} if prepared else {"records": total, "withAbstract": with_abstract, "titleFallback": total - with_abstract},
-            "parts": inventory,
-        }
-        if args.on_overflow == "truncate":
-            result["counts"]["truncated"] = len(truncations)
-            result["truncatedInputs"] = truncations
+                "embeddings": [{
+                    "id": args.recipe_id, "model": MODEL_ID, "revision": args.revision,
+                    "dimensions": args.dimensions, "nativeDimensions": DIMENSIONS,
+                    "dimensionReduction": "matryoshka-prefix" if args.dimensions != DIMENSIONS else "none",
+                    "inferenceDtype": args.dtype, "outputDtype": "float32",
+                    "normalization": "l2", "maxTokens": args.max_tokens, "onOverflow": args.on_overflow,
+                    "input": {"textField": "text", "preparationRecipe": manifest["recipe"], "queryTemplate": QUERY_TEMPLATE}
+                    if prepared else {
+                        "titleField": args.title_field, "titleSelection": "first nonblank occurrence, trimmed",
+                        "abstractField": args.abstract_field, "abstractQualifierRoot": args.abstract_qualifier,
+                        "abstractSelection": (
+                            "all nonblank occurrences, trimmed, in source order" if args.abstract_qualifier is None else
+                            "nonblank occurrences, trimmed, in source order; qualifier root matched case-insensitively"
+                        ),
+                        "abstractSeparator": "\n\n", "fallback": "use title as text", "missingTitle": "none",
+                        "documentTemplate": DOCUMENT_TEMPLATE, "queryTemplate": QUERY_TEMPLATE,
+                    },
+                }],
+                "runtime": {"device": args.device, "batchSizeLimit": args.batch_size, **(encoder.versions if encoder else {})},
+                "counts": {"records": total} if prepared else {"records": total, "withAbstract": with_abstract, "titleFallback": total - with_abstract},
+                "parts": inventory,
+            }
+            if args.on_overflow == "truncate":
+                result["counts"]["truncated"] = len(truncations)
+                result["truncatedInputs"] = truncations
+            if writer is not None:
+                result.update(type="embedding-vectors", format="sqlite", encoding="float32le", source={"input": result["source"]})
+                del result["compression"]
+                writer.seal(result)
+        if args.format == "sqlite":
+            result["files"] = [{"path": DATABASE, **file_entry(stage / DATABASE)}]
         (stage / "manifest.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         stage.rename(output)
         LOGGER.info("Completo %s (%d registros)", output, total)
@@ -358,6 +394,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="Carpeta de la exportación de metadata")
     parser.add_argument("output", type=Path, help="Carpeta nueva para el paquete de vectores")
+    parser.add_argument("--format", choices=("jsonl", "sqlite"), default="jsonl",
+                        help="Formato de salida (por defecto: jsonl comprimido con gzip)")
     parser.add_argument("--revision", required=True, help="Commit de Hugging Face del modelo (40 caracteres hexadecimales)")
     parser.add_argument("--title-field", default="titles")
     parser.add_argument("--abstract-field", default="descriptions")

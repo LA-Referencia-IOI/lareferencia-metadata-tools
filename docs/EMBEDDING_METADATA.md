@@ -35,10 +35,11 @@ Add `--include-provenance` to produce `provenance.jsonl.gz`. The sidecar uses `(
 
 ## Calculate vectors
 
-Install the `inference` extra of this module on the machine that runs the
-encoder. Use the same module revision as for preparation. Pass the complete
-`embedding-inputs` directory reported by `prepare-embedding-metadata` and pin a
-model revision available to the inference environment.
+Install the `inference` extra on the machine that runs the encoder. Use the
+same module revision for preparation and inference. Set `PREPARED_DIR` to the
+complete `embedding-inputs` directory reported by the preparer. Set
+`MODEL_REVISION` to the 40-character Hugging Face commit of
+`google/embeddinggemma-2` you want to run.
 
 ```sh
 python3.12 -m venv .venv-inference
@@ -46,24 +47,96 @@ python3.12 -m venv .venv-inference
 python -m pip install '.[inference]'
 ```
 
+Choose a new output directory and set `--format jsonl` or `--format sqlite`.
+The default is `jsonl`. Both formats use the same text, model, dimensions and
+normalization.
+
 ```sh
-compute-metadata-embeddings \
-  "$PREPARED_DIR" "$VECTOR_DIR" --revision "$MODEL_REVISION"
+# Calculate and publish GZIP JSONL.
+compute-metadata-embeddings "$PREPARED_DIR" "$VECTOR_DIR" \
+  --revision "$MODEL_REVISION" --dimensions 512 --format jsonl
+
+# Calculate and publish SQLite directly.
+compute-metadata-embeddings "$PREPARED_DIR" "$SQLITE_EDITION_DIR" \
+  --revision "$MODEL_REVISION" --dimensions 512 --format sqlite
 ```
 
-The calculator verifies the data checksums and encodes the supplied text. It emits one row containing `network`, `catalogId` and `vector` per input row. The default overflow policy for this format truncates the encoder input and records the part, line and token counts in the vector manifest. Use `--on-overflow error` to reject oversize inputs. The prepared text stays complete on disk.
+| Option | Behavior |
+| --- | --- |
+| `--device`, `--dtype` | Default `cuda` and `bfloat16`. On CPU use `--device cpu --dtype float32`. Both choices produce `float32` vectors. |
+| `--offline` | Load the pinned model revision from the local cache. |
+| `--dimensions` | 768 by default. At 512 or 256, take the first components and L2-normalize the resulting vector in float32. The default recipe ID gets a dimension suffix for reduced vectors. |
+| `--max-tokens`, `--on-overflow` | Limit of 8,192 tokens by default. Prepared texts default to `truncate`. Use `error` to reject oversize inputs. |
+| `--batch-size`, `--chunk-size` | Inference batch cap of 16 and read buffer of 512 records by default. Long documents use smaller inference batches. |
+| `--recipe-id` | Overrides the recipe identifier recorded in the manifest. |
 
-## Pack the vectors
+The calculator checks the input status, file sizes, SHA-256 hashes and row
+counts. It submits the prepared `text` as supplied, with its document template
+already applied. Truncation affects the text sent to the model. The manifest
+records the input part, its one-based line and the before/after token counts.
+The directory is published by renaming a staging directory after successful
+verification. The command exits with 0 on success and 1 on a processing error.
 
-Pass the completed vector directory to `enrichments` from an environment
-with the base package installed. Choose a new directory for the SQLite edition.
+## GZIP JSONL output
+
+With prepared input, the result is an `embedding-vectors` v1 package. Each
+input part produces one corresponding `*.embeddings.jsonl.gz` file. GZIP
+contains UTF-8 JSONL with one vector per row, in input order.
+
+```json
+{"network":"AR","catalogId":"0219761202bbe88b2cfa665aa5b29466","vector":[0.12,-0.04,0.09]}
+```
+
+The example shows three components. The actual length is
+`embeddings[0].dimensions`. Read only the parts listed in the manifest, in
+that order. Within each part, line numbers start at 1 and match the input
+part. The key for joins is `(network, catalogId)`.
+
+| Manifest field | Meaning |
+| --- | --- |
+| `type`, `formatVersion`, `format`, `compression`, `status` | `embedding-vectors`, `1`, `jsonl`, `gzip`, `COMPLETE`. |
+| `source` | Input `packageId` and `manifestSha256`. |
+| `embeddings[0]` | Recipe ID, model and revision, native and output dimensions, reduction, precision, normalization, token policy and input recipe. |
+| `runtime`, `counts` | Device, runtime versions, batch cap and totals. |
+| `parts[]` | Output `file`, `bytes`, `sha256` and `records`, with `sourceFile` and `sourceSha256` for the corresponding input part. |
+| `truncatedInputs[]` | `sourceFile`, `sourceLine`, `sourceTokens` and `encodedTokens` when the policy is `truncate`. |
+
+### Compatibility with an original Java export
+
+The calculator also accepts a complete Java JSONL export and checks its
+`records.sqlite`. It builds the text from the first nonblank title and the
+nonblank descriptions under the configured abstract qualifier. On missing
+abstracts it uses the title as the body. Select fields with `--title-field`,
+`--abstract-field` and `--abstract-qualifier`. Pass `--abstract-qualifier ''`
+to read every occurrence of the selected field. The overflow default for
+this input is `error`.
+
+With this input and `--format jsonl`, the calculator preserves the legacy
+`metadata-embeddings` v1 format. Each line contains an array with one vector
+(`[[0.12,-0.04,0.09]]`). Identity comes from the matching row in the Java
+export. Keep both packages together for the PostgreSQL importer in semantic
+service v2. If you select SQLite with this input, the calculator stores the
+verified network and catalog ID in the vector database and references the
+original export in its manifest.
+
+## SQLite output and conversion
+
+With `--format sqlite`, the calculator writes the vectors directly to the
+database while it runs. The edition contains `embeddings.sqlite` and
+`manifest.json`. To keep both formats from one inference run on prepared
+texts, generate JSONL first and convert that package.
 
 ```sh
 enrichments pack-vectors "$VECTOR_DIR" "$SQLITE_EDITION_DIR"
+enrichments lookup-vector "$SQLITE_EDITION_DIR/embeddings.sqlite" \
+  --network AR --catalog-id "$CATALOG_ID"
 ```
 
-Retain the prepared package and the original export for provenance.
-[SQLite vector contract](METADATA_ENRICHMENT_PACKAGE.md#pack-calculated-embeddings-in-sqlite).
+The converter accepts complete `embedding-vectors` v1 GZIP JSONL packages
+and preserves the float32 values. With either route, keep the input package
+and the original export for provenance. The [SQLite vector contract](METADATA_ENRICHMENT_PACKAGE.md#pack-calculated-embeddings-in-sqlite)
+describes the storage schema and how to resolve references from direct and
+converted editions.
 
 ## Annotated metadata and per-language texts
 
@@ -84,12 +157,3 @@ Run the preparer tests from this repository after installing the package.
 ```sh
 .venv/bin/python -m unittest discover -s tests
 ```
-
-## Batch output dimensions
-
-`compute-metadata-embeddings --dimensions` accepts 768, 512 or 256 and defaults to 768.
-The batch calculator takes the first requested components and L2-normalizes
-the resulting vector in float32. The output profile records the original and
-resulting dimensions and the reduction method. Reduced dimensions add a
-suffix to the default recipe ID. Set a distinct explicit `--recipe-id` for
-each configuration if loading multiple dimensions into the same v2 service.

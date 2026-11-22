@@ -76,8 +76,14 @@ def source_parts(directory, source):
         yield part, path, records
 
 
-def populate(db, directory, source, codec):
-    db.executescript(f'''
+class VectorDatabase:
+    """Write and seal one SQLite edition in a staging directory."""
+
+    def __init__(self, db, dimensions):
+        self.db = db
+        self.dimensions = dimensions
+        self.codec = struct.Struct(f'<{dimensions}f')
+        db.executescript(f'''
         PRAGMA page_size=16384;
         PRAGMA application_id={APPLICATION_ID};
         PRAGMA user_version={VERSION};
@@ -95,9 +101,41 @@ def populate(db, directory, source, codec):
         );
         CREATE TABLE vectors (
             item INTEGER PRIMARY KEY REFERENCES items(id),
-            vector BLOB NOT NULL CHECK(typeof(vector) = 'blob' AND length(vector) = {codec.size})
+            vector BLOB NOT NULL CHECK(typeof(vector) = 'blob' AND length(vector) = {self.codec.size})
         );
-    ''')
+        ''')
+
+    def start_part(self, metadata):
+        return self.db.execute('INSERT INTO parts(metadata) VALUES (?)', (canonical(metadata),)).lastrowid
+
+    def finish_part(self, part, metadata):
+        self.db.execute('UPDATE parts SET metadata = ? WHERE id = ?', (canonical(metadata), part))
+
+    def write_vector(self, part, line, identity, vector):
+        if len(vector) != self.dimensions:
+            raise ValueError('Vector dimension mismatch')
+        if any(type(value) not in (float, int) or not math.isfinite(value) for value in vector):
+            raise ValueError('Vector components must be finite numbers')
+        try:
+            payload = self.codec.pack(*vector)
+        except (OverflowError, struct.error) as error:
+            raise ValueError('Vector component cannot be stored as float32') from error
+        item = self.db.execute(
+            'INSERT INTO items(network,catalog_id,part,line) VALUES (?,?,?,?)',
+            (*identity, part, line),
+        ).lastrowid
+        self.db.execute('INSERT INTO vectors VALUES (?,?)', (item, payload))
+
+    def seal(self, manifest):
+        with self.db:
+            self.db.execute('INSERT INTO package VALUES (1,?)', (canonical(manifest),))
+        if self.db.execute('PRAGMA integrity_check').fetchall() != [('ok',)] or self.db.execute(
+            'PRAGMA foreign_key_check'
+        ).fetchone():
+            raise ValueError('SQLite integrity check failed')
+
+
+def populate(writer, directory, source):
     expected = count(source['counts']['records'], 'total record count')
     total = 0
     for part, path, records in source_parts(directory, source):
@@ -105,24 +143,17 @@ def populate(db, directory, source, codec):
             digest(path) != checksum(part, 'sha256')
         ):
             raise ValueError(f'Part checksum or size mismatch: {part["file"]}')
-        with db, gzip.open(path, 'rt', encoding='utf-8') as stream:
-            part_id = db.execute('INSERT INTO parts(metadata) VALUES (?)', (canonical(part),)).lastrowid
+        with writer.db, gzip.open(path, 'rt', encoding='utf-8') as stream:
+            part_id = writer.start_part(part)
             read = 0
             for line, text in enumerate(stream, 1):
                 try:
                     row = json.loads(text)
                     network, catalog = string(row, 'network'), string(row, 'catalogId')
                     vector = row['vector']
-                    if not isinstance(vector, list) or len(vector) != codec.size // 4:
+                    if not isinstance(vector, list):
                         raise ValueError('Vector dimension mismatch')
-                    if any(type(value) not in (float, int) or not math.isfinite(value) for value in vector):
-                        raise ValueError('Vector components must be finite numbers')
-                    payload = codec.pack(*vector)
-                    item = db.execute(
-                        'INSERT INTO items(network,catalog_id,part,line) VALUES (?,?,?,?)',
-                        (network, catalog, part_id, line),
-                    ).lastrowid
-                    db.execute('INSERT INTO vectors VALUES (?,?)', (item, payload))
+                    writer.write_vector(part_id, line, (network, catalog), vector)
                     read += 1
                 except (ValueError, KeyError, TypeError, OverflowError, struct.error, sqlite3.IntegrityError) as error:
                     raise ValueError(f'{part["file"]}:{line}: {error}') from error
@@ -140,7 +171,6 @@ def publish_vectors(source, destination):
     destination = Path(destination)
     original, original_hash = load_source(directory)
     profile = original['embeddings'][0]
-    codec = struct.Struct(f'<{profile["dimensions"]}f')
     destination.parent.mkdir(parents=True, exist_ok=True)
     lock = destination.with_name(f'.{destination.name}.lock')
     lock.mkdir()
@@ -152,7 +182,8 @@ def publish_vectors(source, destination):
             edition.mkdir()
             database = edition / DATABASE
             with closing(sqlite3.connect(database)) as db:
-                total = populate(db, directory, original, codec)
+                writer = VectorDatabase(db, profile['dimensions'])
+                total = populate(writer, directory, original)
                 manifest = {
                     'type': 'embedding-vectors', 'formatVersion': VERSION, 'format': 'sqlite',
                     'status': 'COMPLETE', 'createdAt': datetime.now(timezone.utc).isoformat(),
@@ -164,12 +195,7 @@ def publish_vectors(source, destination):
                 for key in ('runtime', 'truncatedInputs'):
                     if key in original:
                         manifest[key] = original[key]
-                with db:
-                    db.execute('INSERT INTO package VALUES (1,?)', (canonical(manifest),))
-                if db.execute('PRAGMA integrity_check').fetchall() != [('ok',)] or db.execute(
-                    'PRAGMA foreign_key_check'
-                ).fetchone():
-                    raise ValueError('SQLite integrity check failed')
+                writer.seal(manifest)
             manifest['files'] = [{'path': DATABASE, 'bytes': database.stat().st_size, 'sha256': digest(database)}]
             (edition / 'manifest.json').write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8'
@@ -202,6 +228,6 @@ def lookup_vector(database, *, network, catalog_id):
         return {
             'network': network, 'catalogId': catalog_id, 'embedding': profile,
             'source': package['source'],
-            'sourceRef': {'file': part['file'], 'line': line},
+            'sourceRef': {'file': part.get('file', part['sourceFile']), 'line': line},
             'vector': list(struct.unpack(f'<{profile["dimensions"]}f', payload)),
         }
