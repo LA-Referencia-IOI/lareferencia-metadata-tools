@@ -4,10 +4,13 @@ A package contains results for one network, snapshot and input variant. Independ
 
 ## Run the rights pipeline on the harvester server
 
-The command exports the current LGK, builds a dictionary for that cut using taxonomy v7, generates item fields, verifies the results and publishes an edition.
+Install the base package following the [installation guide](../README.md#installation).
+The installed command can call the Java shell to export the current LGK. It
+builds a dictionary for that cut using taxonomy v7, generates item fields,
+verifies the results and publishes an edition.
 
 ```sh
-run-rights-pipeline --network PY
+run-rights-pipeline --network PY --shell-dir "$SHELL_DIR"
 ```
 
 For a fresh export, use `--shell-dir /path/to/lareferencia-shell`, set `LR_SHELL_DIR`, or run from the platform checkout with a built sibling shell. Java runs with that directory as its working directory to use the installation's configuration. Each fresh export uses a private copy of the executable JAR and extraction profile. Keep the source checkout stable throughout a run.
@@ -36,7 +39,7 @@ The dictionary retains the inventory filters: omit empty strings, COAR and info:
 Run disconnected from SSH using the server's existing process tools. For example:
 
 ```sh
-nohup run-rights-pipeline --network PY \
+nohup run-rights-pipeline --network PY --shell-dir "$SHELL_DIR" \
   > /srv/metadata-enrichments/py-launch.log 2>&1 < /dev/null &
 tail -f /srv/metadata-enrichments/py-launch.log
 ```
@@ -117,27 +120,58 @@ ORDER BY o.target, items DESC;
 
 ## Pack calculated embeddings in SQLite
 
-The same Python library publishes standalone vector editions from COMPLETE
-`embedding-vectors` v1 JSONL gzip packages with one float32 embedding profile.
-Each edition contains `embeddings.sqlite` and `manifest.json`.
+Both direct calculation and conversion publish an `embedding-vectors` v1
+SQLite edition. It contains `embeddings.sqlite` and `manifest.json`.
 
 ```sh
-enrichments pack-vectors /path/to/vector-package /path/to/new-edition
-enrichments lookup-vector /path/to/new-edition/embeddings.sqlite --network AR --catalog-id ITEM_ID
+compute-metadata-embeddings "$PREPARED_DIR" "$SQLITE_EDITION_DIR" \
+  --revision "$MODEL_REVISION" --format sqlite
+enrichments pack-vectors "$VECTOR_DIR" "$SQLITE_EDITION_DIR"
+enrichments lookup-vector "$SQLITE_EDITION_DIR/embeddings.sqlite" \
+  --network AR --catalog-id "$CATALOG_ID"
 ```
 
-The converter verifies part hashes, sizes, counts, dimensions and unique
-`(network, catalogId)` identities before publishing the destination. Keep the
-source package immutable during conversion. The manifest retains the calculated
-vector and prepared-text package provenance, the profile and the SHA-256 of the
-published SQLite file. Lookup includes the calculated vector file and one-based
-line number.
+Use either of the first two commands with a new destination. For direct
+generation, the calculator writes vector batches to a staged SQLite file.
+For conversion, the input is a `COMPLETE` GZIP JSONL `embedding-vectors` v1
+package with one float32 profile. Both publish the edition after validating
+row counts, vector dimensions, unique identities and SQLite integrity. Keep
+the source packages immutable during either operation.
 
-The vector database has its own SQLite application ID (`0x4C524556`) and schema
-version (`PRAGMA user_version=1`). It uses 16 KiB pages. The `items` table
-indexes document identity and joins to `parts` for source references.
-`vectors.vector` stores one little-endian IEEE 754 float32 BLOB per item, with
-four bytes per dimension. The conversion retains the input dimensions and
-float32 values. Store derived dimensions in their own editions with their own
-profile. Consumers can cross-reference a vector with a field enrichment edition
-by network and catalog ID. Open published databases in read-only mode.
+### SQLite manifest and provenance
+
+| Field | Meaning |
+| --- | --- |
+| `type`, `formatVersion`, `format`, `status`, `encoding` | `embedding-vectors`, `1`, `sqlite`, `COMPLETE`, `float32le`. |
+| `source.input` | Input `packageId` and `manifestSha256`. With direct generation from a Java export it contains `exportId`, `manifestSha256`, `variant` and `mappingHash`. |
+| `embeddings[0]` | Recipe, model and revision, dimensions, reduction method, precision, normalization and text policies. |
+| `runtime`, `counts`, `truncatedInputs` | Calculation environment, row counts and truncation evidence, when available. Truncation locations always refer to the model input. |
+| `files[0]` | Database path, byte size and SHA-256. |
+
+The two publication routes resolve locations as follows:
+
+| Route | Manifest `parts[]` | `lookup-vector` location |
+| --- | --- | --- |
+| Direct calculation | `sourceFile`, `sourceSha256`, `sourceBytes` and `records` for each input part. | `sourceRef.file` and its one-based `line` resolve in the input package. |
+| Conversion | Original vector inventory, including `file`, `sha256`, `bytes`, `records`, `sourceFile` and `sourceSha256`. The manifest also includes `source.vectorManifestSha256`. | `sourceRef.file` and its one-based `line` resolve in the JSONL vector package. The same line in the corresponding input part identifies the text. |
+
+### SQLite schema and encoding
+
+The file uses SQLite application ID `0x4C524556`, `PRAGMA user_version=1`
+and 16 KiB pages. Open published databases in read-only mode. The finalized
+database and its manifest are sufficient for vector lookup. The input
+packages remain useful for resolving provenance.
+
+| Table | Contents |
+| --- | --- |
+| `package` | Single JSON metadata row with the profile, input references, counts and part inventory. The external manifest adds the database size and checksum. |
+| `parts` | JSON metadata for each part, keyed by its internal integer ID. |
+| `items` | Unique `(network, catalog_id)` and the corresponding part ID and one-based line. |
+| `vectors` | One BLOB per item. Its length is four bytes times the published dimensions. |
+
+The BLOB consists of contiguous IEEE 754 little-endian float32 values in
+dimension order. At 512 dimensions it occupies 2,048 bytes. For example,
+read a 512-dimensional BLOB in Python with `struct.unpack("<512f", blob)`.
+Lookup returns the identity, embedding profile, source references and decoded
+vector. Join a vector edition and a field enrichment edition by network and
+catalog ID.

@@ -87,7 +87,7 @@ El primer intento de CL exportó 310.260 filas sin errores de registro, pero aca
 
 ## 4. Recuento por país
 
-El script [`count_export_licenses.py`](../src/lareferencia_metadata_tools/count_export_licenses.py) usa la biblioteca estándar de Python. Comprueba que el paquete esté `COMPLETE`, sea JSONL y que el mapeo declare `licenses`. Lee las partes listadas en el manifiesto y comprueba que el número de registros leídos coincida con `counts.exported`. Cada `data.licenses` se valida como array de cadenas. Este recuento comprueba forma y cobertura de filas. La comprobación criptográfica de las partes puede hacerse por separado con el inventario del manifiesto.
+Instalá el [paquete base](../README.md#installation) en un entorno virtual con Python 3.12 o posterior y ejecutá `count-export-licenses`. Comprueba que el paquete esté `COMPLETE`, sea JSONL y que el mapeo declare `licenses`. Lee las partes listadas en el manifiesto y comprueba que el número de registros leídos coincida con `counts.exported`. Cada `data.licenses` se valida como array de cadenas. Este recuento comprueba forma y cobertura de filas. La comprobación criptográfica de las partes puede hacerse por separado con el inventario del manifiesto.
 
 ```bash
 count-export-licenses /ruta/exp-UUID \
