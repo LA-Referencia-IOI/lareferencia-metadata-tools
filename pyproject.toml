@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lareferencia-metadata-tools"
-version = "5.0.0rc4"
+version = "5.0.0rc5"
 description = "LA Referencia metadata enrichment, rights and embedding workflows"
 requires-python = ">=3.12"
 license = {file = "LICENSE"}
