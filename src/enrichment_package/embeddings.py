@@ -16,6 +16,17 @@ from .store import canonical, digest, readonly, string
 APPLICATION_ID = 0x4C524556  # LREV
 VERSION = 1
 DATABASE = 'embeddings.sqlite'
+NO_LABELS_FIELD = object()
+
+
+def reference_labels(value, mode):
+    if value is None and mode == 'predict':
+        return None
+    if (not isinstance(value, list) or not value
+            or any(not isinstance(label, str) or not label.strip() for label in value)
+            or len(set(value)) != len(value)):
+        raise ValueError('Expected distinct reference labels or null in predict mode')
+    return value
 
 
 def count(value, label):
@@ -79,9 +90,10 @@ def source_parts(directory, source):
 class VectorDatabase:
     """Write and seal one SQLite edition in a staging directory."""
 
-    def __init__(self, db, dimensions):
+    def __init__(self, db, dimensions, *, classification=None):
         self.db = db
         self.dimensions = dimensions
+        self.classification = classification
         self.codec = struct.Struct(f'<{dimensions}f')
         db.executescript(f'''
         PRAGMA page_size=16384;
@@ -104,6 +116,8 @@ class VectorDatabase:
             vector BLOB NOT NULL CHECK(typeof(vector) = 'blob' AND length(vector) = {self.codec.size})
         );
         ''')
+        if classification is not None:
+            db.execute('CREATE TABLE labels (item INTEGER PRIMARY KEY REFERENCES items(id), labels_json TEXT)')
 
     def start_part(self, metadata):
         return self.db.execute('INSERT INTO parts(metadata) VALUES (?)', (canonical(metadata),)).lastrowid
@@ -111,7 +125,9 @@ class VectorDatabase:
     def finish_part(self, part, metadata):
         self.db.execute('UPDATE parts SET metadata = ? WHERE id = ?', (canonical(metadata), part))
 
-    def write_vector(self, part, line, identity, vector):
+    def write_vector(self, part, line, identity, vector, *, labels=NO_LABELS_FIELD):
+        if self.classification is not None:
+            labels = reference_labels(labels, self.classification['mode'])
         if len(vector) != self.dimensions:
             raise ValueError('Vector dimension mismatch')
         if any(type(value) not in (float, int) or not math.isfinite(value) for value in vector):
@@ -125,6 +141,9 @@ class VectorDatabase:
             (*identity, part, line),
         ).lastrowid
         self.db.execute('INSERT INTO vectors VALUES (?,?)', (item, payload))
+        if self.classification is not None:
+            payload = None if labels is None else canonical(labels)
+            self.db.execute('INSERT INTO labels VALUES (?,?)', (item, payload))
 
     def seal(self, manifest):
         with self.db:
@@ -153,7 +172,8 @@ def populate(writer, directory, source):
                     vector = row['vector']
                     if not isinstance(vector, list):
                         raise ValueError('Vector dimension mismatch')
-                    writer.write_vector(part_id, line, (network, catalog), vector)
+                    labels = row['labels'] if writer.classification is not None else NO_LABELS_FIELD
+                    writer.write_vector(part_id, line, (network, catalog), vector, labels=labels)
                     read += 1
                 except (ValueError, KeyError, TypeError, OverflowError, struct.error, sqlite3.IntegrityError) as error:
                     raise ValueError(f'{part["file"]}:{line}: {error}') from error
@@ -182,7 +202,7 @@ def publish_vectors(source, destination):
             edition.mkdir()
             database = edition / DATABASE
             with closing(sqlite3.connect(database)) as db:
-                writer = VectorDatabase(db, profile['dimensions'])
+                writer = VectorDatabase(db, profile['dimensions'], classification=original.get('classification'))
                 total = populate(writer, directory, original)
                 manifest = {
                     'type': 'embedding-vectors', 'formatVersion': VERSION, 'format': 'sqlite',
@@ -192,7 +212,7 @@ def publish_vectors(source, destination):
                     'counts': {**original['counts'], 'records': total},
                     'parts': original['parts'],
                 }
-                for key in ('runtime', 'truncatedInputs'):
+                for key in ('runtime', 'truncatedInputs', 'classification'):
                     if key in original:
                         manifest[key] = original[key]
                 writer.seal(manifest)
@@ -216,18 +236,22 @@ def lookup_vector(database, *, network, catalog_id):
         (metadata,) = db.execute('SELECT metadata FROM package WHERE singleton=1').fetchone()
         package = json.loads(metadata)
         row = db.execute('''
-            SELECT v.vector, p.metadata, i.line
+            SELECT v.vector, p.metadata, i.line, i.id
             FROM items i JOIN vectors v ON v.item=i.id JOIN parts p ON p.id=i.part
             WHERE i.network=? AND i.catalog_id=?
         ''', (network, catalog_id)).fetchone()
         if row is None:
             raise LookupError(f'Unknown embedding: {network}/{catalog_id}')
-        payload, part_json, line = row
+        payload, part_json, line, item = row
         (profile,) = package['embeddings']
         part = json.loads(part_json)
-        return {
+        result = {
             'network': network, 'catalogId': catalog_id, 'embedding': profile,
             'source': package['source'],
             'sourceRef': {'file': part.get('file', part['sourceFile']), 'line': line},
             'vector': list(struct.unpack(f'<{profile["dimensions"]}f', payload)),
         }
+        if 'classification' in package:
+            (labels,) = db.execute('SELECT labels_json FROM labels WHERE item=?', (item,)).fetchone()
+            result['labels'] = None if labels is None else json.loads(labels)
+        return result

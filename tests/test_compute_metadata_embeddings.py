@@ -152,6 +152,58 @@ class PreparedInputTest(unittest.TestCase):
                 compute.build(self.args)
         self.assertEqual(set(self.root.parent.iterdir()), {self.root})
 
+    def test_classification_labels_survive_jsonl_and_both_sqlite_paths(self):
+        labels = [["5.4", "2.11"], None, ["6.1"]]
+        self.manifest.update(
+            packageType="classification-dataset", mode="predict", labelProfile="ford-level2",
+            recipe={"id": compute.RECIPE, "textFormat": "gemma-classification", "includeFallback": False},
+        )
+        submitted = []
+        part = self.root / self.part
+        with gzip.open(part, "wt", encoding="utf-8") as out:
+            for row, reference in zip(self.inputs, labels, strict=True):
+                row["text"] = compute.PREFIX["gemma-classification"] + row["catalogId"]
+                out.write(json.dumps({**row, "labels": reference}) + "\n")
+        self.manifest["files"][0].update(compute.file_entry(part))
+        self.manifest_file.write_text(json.dumps(self.manifest))
+
+        def encode(texts):
+            submitted.extend(texts)
+            return [Mock(tolist=lambda: [1.0] + [0.0] * 255) for _ in texts], []
+
+        direct = self.output.with_name("direct")
+        self.args.dimensions = 256
+        encoder = Mock(versions={})
+        encoder.encode.side_effect = encode
+        with patch.object(compute, "Encoder", return_value=encoder):
+            compute.build(self.args)
+            self.args.output = direct
+            self.args.format = "sqlite"
+            compute.build(self.args)
+
+        self.assertEqual(submitted, [row["text"] for row in self.inputs] * 2)
+        packed = self.output.with_name("packed")
+        converted = publish_vectors(self.output, packed)
+        manifest = json.loads((self.output / "manifest.json").read_bytes())
+        self.assertEqual(converted["classification"], {"mode": "predict", "labelProfile": "ford-level2"})
+        with gzip.open(self.output / manifest["parts"][0]["file"], "rt", encoding="utf-8") as stream:
+            for expected, line in zip(labels, stream, strict=True):
+                row = json.loads(line)
+                self.assertEqual(row["labels"], expected)
+                for edition in (direct, packed):
+                    found = lookup_vector(edition / "embeddings.sqlite", network=row["network"],
+                                          catalog_id=row["catalogId"])
+                    self.assertEqual(found["labels"], expected)
+                    self.assertEqual(found["vector"], row["vector"])
+
+        self.manifest["mode"] = "train"
+        self.manifest_file.write_text(json.dumps(self.manifest))
+        self.args.output = self.output.with_name("invalid-train")
+        with patch.object(compute, "Encoder", return_value=encoder):
+            with self.assertRaisesRegex(ValueError, "reference labels"):
+                compute.build(self.args)
+        self.assertFalse(self.args.output.exists())
+
     def test_sqlite_accepts_legacy_export_with_verified_record_identity(self):
         self.args.format = "sqlite"
         self.args.title_field = "titles"

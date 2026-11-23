@@ -142,6 +142,69 @@ converted editions.
 
 Omit `--combine` to produce an `annotated-metadata` v2 package. It includes a local SQLite index and arrays for titles, abstracts, raw keywords, affiliations, funders, document types and other descriptions. Titles and abstracts include their detected languages. Abstracts record their selection. Records without a title remain available for inspection. Add `--include-provenance` for the export locators and occurrence indexes.
 
+### Annotation profiles and FORD subjects
+
+`--annotation-profile auto|bibliographic|ford-level2` chooses the annotated
+view independently of the export mapping. Its default is `auto`:
+
+| Export mapping | `auto` resolves to | Source subject array |
+| --- | --- | --- |
+| `bibliographic-roles` 1.0 | `bibliographic` | `keywords` |
+| `classification-embeddings` 2.0 | `bibliographic` | `keywords` |
+| `subjects-ford` 1.0 | `ford-level2` | `subjects` |
+
+Existing commands, classification thresholds, role rules, abstract fallback,
+language detection, keyword preservation and combined recipes retain their
+behavior for the two previous mappings. The manifest now includes the additive
+`annotationProfile` object with `name`, `version` (`1.0`) and `requested`.
+Input mappings still must pass the inventory, version and identity checks.
+
+```sh
+prepare-embedding-metadata --input "$FORD_EXPORT_DIR" \
+  --output "$OUTPUT_DIR" --models-dir "$MODELS_DIR" \
+  --annotation-profile ford-level2 --include-provenance
+```
+
+The `ford-level2` view keeps all the existing annotated families and adds:
+
+- `subjects`: the complete original subject occurrences, unchanged and in
+  source order, including free text, general FORD codes, language and qualifiers.
+- `subjectTerms`: second-level BECyT FORD identifiers only, deduplicated by
+  scheme/code in first-occurrence order. Each is an object such as
+  `{"scheme":"becyt-ford","code":"5.4","uri":"https://purl.org/becyt/ford/5.4"}`.
+
+Matching trims surrounding whitespace and requires the full literal
+`http://purl.org/becyt/ford/<code>` or its HTTPS equivalent. The code must have
+two numeric components, a first component from 1 to 6 and a positive second
+component without leading zeros. This is structural selection, not validation
+against a complete vocabulary release. `5`, `5.4.1`, trailing path segments,
+queries, labels and unrelated URLs are excluded. Peruvian `pe-repo/ocde/ford`
+identifiers are preserved in `subjects` but are not translated to BECyT codes.
+HTTP and HTTPS versions of a code produce one canonical HTTPS term.
+
+Records without second-level codes remain in the output with `subjectTerms: []`.
+This view does not infer a child from a parent code or classify new disciplines.
+For `subjects-ford`, original occurrences live in `subjects`; `keywords` is empty
+unless the input also supplies that field. Explicit `ford-level2` also works with
+the previous mappings, taking subjects from their `keywords` and preserving
+those keywords unchanged. Explicit `bibliographic` on a `subjects-ford` export
+instead copies all subjects to `keywords`, without adding the FORD arrays.
+
+With `--include-provenance`, `origins.subjects[i]` references the original
+`[field, index]`; `origins.subjectTerms[i]` is a list of **all** such references
+that contributed to that deduplicated term. Indexes are zero-based. Manifest
+counts `subjectOccurrences`, `subjectTerms` and `recordsWithSubjectTerms` count
+original occurrences, retained distinct terms per record, and records having at
+least one term, respectively; they are also reported per network.
+
+`ford-level2` produces annotated metadata and rejects `--combine` to avoid
+discarding the selected labels. For the historical combined recipe, select
+`--annotation-profile bibliographic --combine` explicitly. The per-language
+consumer below can read either annotated view; subjects and subjectTerms do not
+enter its embedding texts. Keep the annotated package to join labels by
+`(network, catalogId)`. Abstracts selected by uncertain fallback remain marked
+`selection: "uncertain_fallback"`; they are candidates, not confirmed abstracts.
+
 ```sh
 build-embedding-inputs "$ANNOTATED_DIR" > entries.jsonl
 ```
@@ -157,3 +220,22 @@ Run the preparer tests from this repository after installing the package.
 ```sh
 .venv/bin/python -m unittest discover -s tests
 ```
+
+## Prepare a classification dataset
+
+Run `prepare-classification-dataset --input "$ANNOTATED_DIR" --output "$OUTPUT_DIR" --mode train --text-format gemma-classification`.
+It reads a complete v2 annotated package and writes a new `cls-…` directory with a manifest and UTF-8 `records.jsonl.gz`.
+Each row contains `network`, `catalogId`, ordered `languages`, one `text`, and `labels` (distinct second-level BECyT codes from `subjectTerms`).
+Join the row to the annotated package by network and catalog ID. Its manifest is identified by package ID and SHA-256.
+
+The v1 recipe reads titles then abstracts, trims surrounding whitespace, skips blank values and groups occurrences by language in first-seen order. Paragraphs are separated by two newlines. By default it skips uncertain fallback abstracts. Use `--include-fallback` to include them. Rows with no usable text are counted and omitted in both modes.
+
+The default `plain` format writes the content directly. `gemma-classification` prepends the literal `task: classification | query: ` once. Encode preformatted text with an empty additional prompt. FORD labels stay outside the text.
+
+For prediction, use `prepare-classification-dataset --input "$ANNOTATED_DIR" --output "$OUTPUT_DIR" --mode predict --recipe-from "$TRAIN_PACKAGE"`. Prediction keeps the available reference labels and writes JSON null when they are unknown. Training omits rows without labels. Only pass `text` to the classifier. The manifest counts omitted and unlabeled rows.
+
+Pass the classification package directory directly to `compute-metadata-embeddings` with `--format jsonl` or `--format sqlite`. The encoder receives the prepared `text` with an empty additional prompt. Choose `gemma-classification` during preparation to include the Gemma classification prefix in that text.
+
+The vectors manifest records `classification.mode` and `classification.labelProfile`, together with the source package and text recipe. Each JSONL vector includes `labels` alongside `network`, `catalogId` and `vector`. A train vector requires a nonempty list of reference labels. A predict vector carries the known labels or JSON null when the reference is unknown.
+
+In SQLite, join `labels.item` to `items.id` and `vectors.item`. The `labels.labels_json` column stores the ordered JSON array or SQL NULL. Both `enrichments lookup-vector` and `enrichments pack-vectors` preserve the labels and that distinction.

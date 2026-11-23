@@ -16,7 +16,8 @@ from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path, PurePosixPath
 
-from enrichment_package.embeddings import DATABASE, VectorDatabase
+from enrichment_package.embeddings import DATABASE, NO_LABELS_FIELD, VectorDatabase, reference_labels
+from lareferencia_embedding_metadata.classification import PREFIX, RECIPE
 
 LOGGER = logging.getLogger("metadata_embeddings")
 MODEL_ID = "google/embeddinggemma-2"
@@ -169,7 +170,7 @@ class Encoder:
         return vectors, truncated
 
 
-def write_jsonl_vector(stream, line, identity, vector):
+def write_jsonl_vector(stream, line, identity, vector, *, labels=NO_LABELS_FIELD):
     if identity is None:
         # Nine significant digits round-trip float32. Preserve signed zero too.
         values = (format(value, ".9g") for value in vector)
@@ -177,10 +178,12 @@ def write_jsonl_vector(stream, line, identity, vector):
     else:
         network, catalog_id = identity
         record = {"network": network, "catalogId": catalog_id, "vector": vector}
+        if labels is not NO_LABELS_FIELD:
+            record["labels"] = labels
         stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n")
 
 
-def write_batch(write_vector, encoder, texts, source_file, first_line, truncations, identities):
+def write_batch(write_vector, encoder, texts, source_file, first_line, truncations, identities, labels):
     try:
         vectors, truncated = encoder.encode(texts)
     except (RuntimeError, ValueError) as exc:
@@ -196,15 +199,17 @@ def write_batch(write_vector, encoder, texts, source_file, first_line, truncatio
         line = first_line + index
         identity = identities[index] if identities is not None else None
         try:
-            write_vector(line, identity, vector.tolist())
+            write_vector(line, identity, vector.tolist(), labels=labels[index] if labels is not None else NO_LABELS_FIELD)
         except (ValueError, sqlite3.IntegrityError) as exc:
             raise ValueError(f"{source_file}:{line}: {exc}") from exc
 
 
-def write_part(source_path, source_file, destination, index_rows, encoder, args, truncations, *, sqlite_write=None):
+def write_part(source_path, source_file, destination, index_rows, encoder, args, truncations, *,
+               sqlite_write=None, classification=None):
     count = with_abstract = 0
     texts = []
     identities = [] if index_rows is None or sqlite_write is not None else None
+    labels = [] if classification is not None else None
     read = gzip.open if source_file.endswith(".gz") else open
     output_file = nullcontext()
     if sqlite_write is None:
@@ -227,16 +232,20 @@ def write_part(source_path, source_file, destination, index_rows, encoder, args,
                     if not all(isinstance(value, str) and value.strip() for value in (*identity, text)):
                         raise ValueError("Expected nonblank network, catalogId and text")
                     identities.append(identity)
+                if labels is not None:
+                    labels.append(reference_labels(record["labels"], classification["mode"]))
             except (ValueError, KeyError, TypeError) as exc:
                 raise ValueError(f"{source_file}:{count}: {exc}") from exc
             texts.append(text)
             if len(texts) == args.chunk_size:
-                write_batch(write_vector, encoder, texts, source_file, count - len(texts) + 1, truncations, identities)
+                write_batch(write_vector, encoder, texts, source_file, count - len(texts) + 1, truncations, identities, labels)
                 texts.clear()
                 if identities is not None:
                     identities.clear()
+                if labels is not None:
+                    labels.clear()
         if texts:
-            write_batch(write_vector, encoder, texts, source_file, count - len(texts) + 1, truncations, identities)
+            write_batch(write_vector, encoder, texts, source_file, count - len(texts) + 1, truncations, identities, labels)
     return count, with_abstract
 
 
@@ -262,7 +271,9 @@ def build(args):
     manifest_path = package_file(source, "manifest.json")
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes)
-    prepared = manifest.get("packageType") == "embedding-inputs"
+    package_type = manifest.get("packageType")
+    prepared = package_type in ("embedding-inputs", "classification-dataset")
+    classification = None
     if manifest.get("status") != "COMPLETE":
         raise ValueError("Expected a COMPLETE input package")
     files = {entry["path"]: entry for entry in manifest["files"]}
@@ -270,14 +281,21 @@ def build(args):
         raise ValueError("Duplicate paths in input manifest")
     if prepared:
         if manifest["contractVersion"] != 1:
-            raise ValueError("Unsupported embedding-inputs contract version")
+            raise ValueError(f"Unsupported {package_type} contract version")
+        if package_type == "classification-dataset":
+            recipe = manifest["recipe"]
+            if (manifest["mode"] not in ("train", "predict") or manifest["labelProfile"] != "ford-level2"
+                    or recipe["id"] != RECIPE or recipe["textFormat"] not in PREFIX
+                    or type(recipe["includeFallback"]) is not bool):
+                raise ValueError("Unsupported classification dataset profile")
+            classification = {key: manifest[key] for key in ("mode", "labelProfile")}
         parts = manifest["parts"]
         if (not isinstance(parts, list) or len(set(parts)) != len(parts)
                 or any(not part.endswith(".jsonl.gz") or part == "provenance.jsonl.gz" or part not in files for part in parts)):
-            raise ValueError("Invalid embedding-inputs parts")
+            raise ValueError(f"Invalid {package_type} parts")
         expected = manifest["counts"]["emitted"]
         if type(expected) is not int or expected < 0:
-            raise ValueError("Invalid embedding-inputs count")
+            raise ValueError(f"Invalid {package_type} count")
         index_path = None
     else:
         if manifest.get("options", {}).get("format") != "jsonl":
@@ -293,7 +311,12 @@ def build(args):
     if args.on_overflow is None:
         args.on_overflow = "truncate" if prepared else "error"
     if args.recipe_id is None:
-        args.recipe_id = manifest["recipe"] if prepared else "title-abstract"
+        if classification is not None:
+            args.recipe_id = f'{recipe["id"]}-{recipe["textFormat"]}'
+            if recipe["includeFallback"]:
+                args.recipe_id += "-with-fallback"
+        else:
+            args.recipe_id = manifest["recipe"] if prepared else "title-abstract"
         if args.dimensions != DIMENSIONS:
             suffix = f"-{args.dimensions}d"
             args.recipe_id = args.recipe_id[:100 - len(suffix)] + suffix
@@ -314,7 +337,7 @@ def build(args):
             database = resources.enter_context(closing(sqlite3.connect(
                 index_path.as_uri() + "?mode=ro&immutable=1", uri=True))) if index_path else None
             edition = resources.enter_context(closing(sqlite3.connect(stage / DATABASE))) if args.format == "sqlite" else None
-            writer = VectorDatabase(edition, args.dimensions) if edition is not None else None
+            writer = VectorDatabase(edition, args.dimensions, classification=classification) if edition is not None else None
             rows = indexed_rows(database, manifest)
             inventory = []
             total = with_abstract = 0
@@ -326,14 +349,16 @@ def build(args):
                     destination = stage / relative
                     if destination.exists():
                         raise ValueError(f"Colisión de nombres de salida: {relative}")
-                    count, abstracts = write_part(source_path, part, destination, rows, encoder, args, truncations)
+                    count, abstracts = write_part(source_path, part, destination, rows, encoder, args, truncations,
+                                                  classification=classification)
                     metadata.update(file=relative, records=count, **file_entry(destination))
                     LOGGER.info("%s %d registros", relative, count)
                 else:
                     with edition:
                         part_id = writer.start_part(metadata)
                         count, abstracts = write_part(source_path, part, None, rows, encoder, args, truncations,
-                                                      sqlite_write=partial(writer.write_vector, part_id))
+                                                      sqlite_write=partial(writer.write_vector, part_id),
+                                                      classification=classification)
                         metadata.update(records=count, sourceBytes=files[part]["bytes"])
                         writer.finish_part(part_id, metadata)
                     LOGGER.info("%s %d registros escritos en SQLite", part, count)
@@ -372,6 +397,9 @@ def build(args):
                 "counts": {"records": total} if prepared else {"records": total, "withAbstract": with_abstract, "titleFallback": total - with_abstract},
                 "parts": inventory,
             }
+            if classification is not None:
+                result["classification"] = classification
+                del result["embeddings"][0]["input"]["queryTemplate"]
             if args.on_overflow == "truncate":
                 result["counts"]["truncated"] = len(truncations)
                 result["truncatedInputs"] = truncations

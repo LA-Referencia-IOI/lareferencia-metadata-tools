@@ -25,6 +25,7 @@ prepare-embedding-metadata = "lareferencia_embedding_metadata.prepare:main"
 postprocess-embedding-metadata = "lareferencia_embedding_metadata.postprocess:main"
 train-embedding-metadata = "lareferencia_embedding_metadata.train:main"
 build-embedding-inputs = "lareferencia_embedding_metadata.examples.build_inputs:main"
+prepare-classification-dataset = "lareferencia_embedding_metadata.classification:main"
 compute-metadata-embeddings = "lareferencia_metadata_tools.compute_metadata_embeddings:main"
 
 [tool.setuptools.packages.find]

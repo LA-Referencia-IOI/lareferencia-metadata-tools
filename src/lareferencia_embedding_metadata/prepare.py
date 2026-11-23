@@ -15,13 +15,13 @@ import sys
 import tempfile
 from uuid import uuid4
 
-from . import combined, postprocess
+from . import annotation_profiles, combined, postprocess
 
 
 IDENTITY = ("network", "catalogId", "identifier", "metadataHash")
 FAMILIES = ("titles", "abstracts", "keywords", "affiliations", "funders", "documentTypes", "otherDescriptions")
 INPUT_FIELDS = ("titles", "descriptions", "keywords", "affiliations", "funders", "types")
-PROFILES = {("bibliographic-roles", "1.0"), ("classification-embeddings", "2.0")}
+PROFILES = {("bibliographic-roles", "1.0"), ("classification-embeddings", "2.0"), annotation_profiles.FORD_MAPPING}
 PART = re.compile(r"[^/]+/part-[0-9]+\.jsonl(?:\.gz)?")
 INDEX = """CREATE TABLE records (
     network TEXT NOT NULL, catalog_id TEXT NOT NULL,
@@ -74,7 +74,7 @@ class RecordError(ValueError):
 def validate_data(data, required):
     if not isinstance(data, dict):
         raise RecordError("Expected a data object")
-    for field in INPUT_FIELDS:
+    for field in dict.fromkeys((*INPUT_FIELDS, *required)):
         items = data.get(field, None if field in required else [])
         if not isinstance(items, list):
             raise RecordError(f"Expected array in data.{field}")
@@ -86,7 +86,7 @@ def validate_data(data, required):
                     raise RecordError(f"Invalid data.{field}[{i}].{key}")
 
 
-def bibliographic(row, annotated, *, include_provenance):
+def bibliographic(row, annotated, *, include_provenance, subject_field="keywords", annotation_profile="bibliographic"):
     data = {k: [] for k in FAMILIES}
     origins = defaultdict(list)
 
@@ -100,8 +100,14 @@ def bibliographic(row, annotated, *, include_provenance):
 
     for i, item in enumerate(annotated["titles"]):
         add("titles", text(item), "titles", i)
-    for i, item in enumerate(row["data"]["keywords"]):
-        add("keywords", item, "keywords", i)
+    # FORD annotations retain subjects separately; existing keywords remain
+    # unchanged for both historical input profiles.
+    keyword_field = subject_field if annotation_profile == "bibliographic" else "keywords"
+    for i, item in enumerate(row["data"].get(keyword_field, [])):
+        add("keywords", item, keyword_field, i)
+    if annotation_profile == "ford-level2":
+        annotation_profiles.ford_view(data, origins, row["data"][subject_field], subject_field,
+                                     include_provenance=include_provenance)
 
     represented = set()
     for family, key in (("funders", "name"), ("affiliations", "literal"), ("documentTypes", "type")):
@@ -143,13 +149,16 @@ def write_row(stream, value):
     stream.write(compact(value) + "\n")
 
 
-def convert(root, dest, manifest, mapping, parts, annotator, *, combine, include_provenance):
-    required = INPUT_FIELDS if mapping["name"] == "bibliographic-roles" else ("titles", "descriptions", "keywords")
+def convert(root, dest, manifest, mapping, parts, annotator, *, combine, include_provenance,
+            annotation_profile="bibliographic", subject_field="keywords"):
+    required = INPUT_FIELDS if mapping["name"] == "bibliographic-roles" else ("titles", "descriptions", subject_field)
     source_refs = {s["network"]: s["snapshotRef"] for s in manifest["sources"]}
     index = nullcontext() if combine else closing(sqlite3.connect(dest / "records.sqlite"))
     audit = gzip.open(dest / PROVENANCE, "xt", encoding="utf-8", compresslevel=1) if include_provenance else nullcontext()
     success = "emitted" if combine else "annotated"
     totals = Counter(input=0, errors=0, omittedMissingTitle=0, keywordOccurrences=0, **{success: 0})
+    if annotation_profile == "ford-level2":
+        totals.update(subjectOccurrences=0, subjectTerms=0, recordsWithSubjectTerms=0)
     networks = defaultdict(Counter)
     output_parts = []
     with (audit as provenance, index as db,
@@ -195,14 +204,18 @@ def convert(root, dest, manifest, mapping, parts, annotator, *, combine, include
                     counts = defaultdict(Counter)
                     annotated = annotator.annotate(row, manifest["exportId"], counts)
                     if combine:
-                        text, origins = combined.compose(row["data"], annotated, include_provenance=include_provenance)
+                        combined_data = {**row["data"], "keywords": row["data"][subject_field]}
+                        text, origins = combined.compose(combined_data, annotated, include_provenance=include_provenance)
                         if text is None:
                             totals["omittedMissingTitle"] += 1
                             stats["omittedMissingTitle"] += 1
                             continue
+                        if include_provenance and subject_field != "keywords":
+                            origins[subject_field] = origins.pop("keywords")
                         record = {**key, "text": text}
                     else:
-                        data, origins = bibliographic(row, annotated, include_provenance=include_provenance)
+                        data, origins = bibliographic(row, annotated, include_provenance=include_provenance,
+                                                      subject_field=subject_field, annotation_profile=annotation_profile)
                         record = {**key, "data": data}
                     write_row(stream, record)
                     count += 1
@@ -214,7 +227,11 @@ def convert(root, dest, manifest, mapping, parts, annotator, *, combine, include
                                                "origins": origins})
                     for counter in (totals, stats):
                         counter[success] += 1
-                        counter["keywordOccurrences"] += len(row["data"]["keywords"])
+                        counter["keywordOccurrences"] += len(combined_data["keywords"] if combine else data["keywords"])
+                        if annotation_profile == "ford-level2":
+                            counter["subjectOccurrences"] += len(data["subjects"])
+                            counter["subjectTerms"] += len(data["subjectTerms"])
+                            counter["recordsWithSubjectTerms"] += bool(data["subjectTerms"])
                         for family in ("title", "abstract"):
                             for label, n in counts["records." + family].items():
                                 counter[family + "." + label] += n
@@ -228,12 +245,13 @@ def convert(root, dest, manifest, mapping, parts, annotator, *, combine, include
     return totals, networks, output_parts
 
 
-def prepare(root, output, models, *, combine=False, include_provenance=False):
+def prepare(root, output, models, *, combine=False, include_provenance=False, annotation_profile="auto"):
     root = root.resolve()
     if output.resolve().is_relative_to(root):
         raise ValueError("Choose an output directory outside the input package")
     parent_hash = postprocess.sha(root / "manifest.json")
     parent, mapping, parts = checked_export(root)
+    resolved_profile, subject_field = annotation_profiles.resolve(annotation_profile, mapping, combine=combine)
     language, role = models / "lid.176.ftz", models / "role.bin"
     annotator = postprocess.Annotator(language, role)
     package_id = ("emb-inputs-" if combine else "ann-") + str(uuid4())
@@ -244,7 +262,8 @@ def prepare(root, output, models, *, combine=False, include_provenance=False):
         dest = Path(work) / package_id
         dest.mkdir()
         totals, networks, data_parts = convert(root, dest, parent, mapping, parts, annotator,
-                                                combine=combine, include_provenance=include_provenance)
+                                                combine=combine, include_provenance=include_provenance,
+                                                annotation_profile=resolved_profile, subject_field=subject_field)
         if parent_hash != postprocess.sha(root / "manifest.json"):
             raise ValueError("Parent manifest changed during preparation")
         names = [*data_parts, "errors.jsonl"]
@@ -258,6 +277,7 @@ def prepare(root, output, models, *, combine=False, include_provenance=False):
             "packageType": "embedding-inputs" if combine else "annotated-metadata",
             "packageId": package_id, "status": status, "startedAt": started, "finishedAt": now(),
             "counts": totals, "countsByNetwork": networks, "parts": data_parts,
+            "annotationProfile": {"name": resolved_profile, "version": "1.0", "requested": annotation_profile},
             "files": [{"path": name, "bytes": (dest / name).stat().st_size, "sha256": postprocess.sha(dest / name)}
                       for name in names],
         }
@@ -286,10 +306,13 @@ def main():
                         help="Directory containing lid.176.ftz and role.bin (default: LR_EMBEDDING_MODELS or ./modelos)")
     parser.add_argument("--combine", action="store_true", help="Prepare one combined embedding input per record with a title")
     parser.add_argument("--include-provenance", action="store_true", help="Include source provenance and occurrence references")
+    parser.add_argument("--annotation-profile", choices=annotation_profiles.CHOICES, default="auto",
+                        help="Annotation view; auto selects ford-level2 for subjects-ford, bibliographic otherwise")
     args = parser.parse_args()
     try:
         status, dest = prepare(args.input, args.output, args.models_dir,
-                               combine=args.combine, include_provenance=args.include_provenance)
+                               combine=args.combine, include_provenance=args.include_provenance,
+                               annotation_profile=args.annotation_profile)
     except (ValueError, OSError, KeyError, RuntimeError, sqlite3.Error, EOFError) as exc:
         print(f"FAILED: {exc}", file=sys.stderr)
         return 1

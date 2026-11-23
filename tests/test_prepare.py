@@ -177,3 +177,125 @@ class PackageTest(unittest.TestCase):
         self.assertEqual(rows[0]['text'], 'title: Sol | text: Sol\n\nCielo')
         manifest = json.loads((dest / 'manifest.json').read_bytes())
         self.assertEqual(manifest['counts']['omittedMissingTitle'], 1)
+
+    def ford_input(self):
+        self.profile.update(name='subjects-ford', version='1.0')
+        (self.root/'mapping.json').write_text(p.compact(self.profile))
+        for row in self.rows:
+            row['data']['subjects'] = row['data'].pop('keywords')
+        self.rows[0]['data']['subjects'] += [
+            {'value': 'https://purl.org/becyt/ford/5'},
+            {'value': ' https://purl.org/becyt/ford/5.4 ', 'language': 'es'},
+            {'value': 'http://purl.org/becyt/ford/5.4', 'qualifier': 'ford'},
+            {'value': 'https://purl.org/becyt/ford/2.11'},
+            {'value': 'https://purl.org/pe-repo/ocde/ford#5.4'},
+            {'value': 'https://purl.org/becyt/ford/5.4.1'},
+            {'value': 'https://purl.org/becyt/ford/5.4extra'},
+            {'value': 'https://purl.org/becyt/ford/5.4?x=1'},
+        ]
+        self.dump()
+
+    def test_ford_auto_terms_preservation_and_provenance(self):
+        from lareferencia_embedding_metadata.examples.build_inputs import build_inputs
+
+        self.ford_input()
+        status, dest = self.execute(include_provenance=True)
+        self.assertEqual(status, 'COMPLETE')
+        rows = list(p.postprocess.read_rows(dest/(self.part+'.gz')))
+        first, second = [r['data'] for r in rows]
+        self.assertEqual(first['subjects'], self.rows[0]['data']['subjects'])
+        self.assertEqual(first['keywords'], [])
+        self.assertEqual(first['subjectTerms'], [
+            {'scheme': 'becyt-ford', 'code': c, 'uri': 'https://purl.org/becyt/ford/'+c}
+            for c in ['5.4', '2.11']])
+        self.assertEqual(second['subjectTerms'], [])
+        origins = list(p.postprocess.read_rows(dest/p.PROVENANCE))[0]['origins']
+        self.assertEqual(origins['subjectTerms'], [[['subjects', 2], ['subjects', 3]], [['subjects', 4]]])
+        self.assertEqual(origins['subjects'], [['subjects', i] for i in range(9)])
+        manifest = json.loads((dest/'manifest.json').read_bytes())
+        self.assertEqual(manifest['annotationProfile'], {'name':'ford-level2', 'version':'1.0', 'requested':'auto'})
+        self.assertEqual(manifest['counts']['subjectTerms'], 2)
+        self.assertEqual(manifest['counts']['recordsWithSubjectTerms'], 1)
+        self.assertEqual(manifest['counts']['subjectOccurrences'], 10)
+        self.assertTrue(list(build_inputs(dest)))
+
+    def test_existing_profiles_auto_matches_explicit_and_opt_in_ford(self):
+        for name, ver in [('bibliographic-roles', '1.0'), ('classification-embeddings', '2.0')]:
+            self.profile.update(name=name, version=ver)
+            (self.root/'mapping.json').write_text(p.compact(self.profile))
+            self.rows[0]['data']['keywords'] = [{'value':'http://purl.org/becyt/ford/5.4'}]
+            self.dump()
+            for combine in [False, True]:
+                with self.subTest(mapping=name, combine=combine):
+                    _, auto = self.execute(combine=combine, include_provenance=True)
+                    _, explicit = self.execute(combine=combine, include_provenance=True,
+                                               annotation_profile='bibliographic')
+                    for part in [self.part+'.gz', p.PROVENANCE]:
+                        self.assertEqual(list(p.postprocess.read_rows(auto/part)), list(p.postprocess.read_rows(explicit/part)))
+                    a, b = [json.loads((path/'manifest.json').read_bytes()) for path in [auto,explicit]]
+                    self.assertEqual(a['counts'], b['counts'])
+                    self.assertEqual(a['countsByNetwork'], b['countsByNetwork'])
+            _, ford = self.execute(annotation_profile='ford-level2', include_provenance=True)
+            row = next(p.postprocess.read_rows(ford/(self.part+'.gz')))
+            self.assertEqual(row['data']['subjectTerms'][0]['code'], '5.4')
+            self.assertEqual(row['data']['subjects'], self.rows[0]['data']['keywords'])
+            self.assertEqual(row['data']['keywords'], self.rows[0]['data']['keywords'])
+            ref = next(p.postprocess.read_rows(ford/p.PROVENANCE))
+            self.assertEqual(ref['origins']['subjectTerms'], [[['keywords', 0]]])
+
+    def test_ford_explicit_bibliographic_and_combine(self):
+        self.ford_input()
+        for combine in [False, True]:
+            _, dest = self.execute(annotation_profile='bibliographic', combine=combine, include_provenance=True)
+            row = next(p.postprocess.read_rows(dest/(self.part+'.gz')))
+            if combine:
+                self.assertIn('https://purl.org/becyt/ford/2.11', row['text'])
+            else:
+                self.assertEqual(row['data']['keywords'], self.rows[0]['data']['subjects'])
+                self.assertNotIn('subjectTerms', row['data'])
+        with self.assertRaisesRegex(ValueError, 'omit --combine'):
+            self.execute(combine=True)
+        with self.assertRaisesRegex(ValueError, 'Unknown annotation profile'):
+            self.execute(annotation_profile='typo')
+        self.rows[0]['data']['titles'] = []
+        self.dump()
+        status, dest = self.execute(annotation_profile='bibliographic', combine=True, include_provenance=True)
+        self.assertEqual(status, 'COMPLETE')
+        self.assertEqual(json.loads((dest/'manifest.json').read_bytes())['counts']['omittedMissingTitle'], 1)
+
+    def test_missing_or_invalid_subjects_are_record_errors(self):
+        self.ford_input()
+        del self.rows[0]['data']['subjects']
+        self.rows[1]['data']['subjects'] = [{'value': 5.4}]
+        self.dump()
+        status, dest = self.execute()
+        self.assertEqual(status, 'PARTIAL')
+        errors = list(p.postprocess.read_rows(dest/'errors.jsonl'))
+        self.assertEqual(len(errors), 2)
+        self.assertIn('data.subjects', errors[0]['error'])
+        self.assertIn('data.subjects[0].value', errors[1]['error'])
+
+    def test_classification_modes_share_text_and_preserve_known_labels(self):
+        from lareferencia_embedding_metadata import classification as c
+
+        self.ford_input()
+        self.rows[0]['data']['titles'] = [{'value':'Un título'}, {'value':'English title'}]
+        self.rows[0]['data']['descriptions'] = [{'value':'Resumen español'}]
+        self.fake.detect_language = lambda s: ('en', 'en') if s == 'English title' else ('es', 'es')
+        self.dump()
+        _, ann = self.execute()
+        for fmt, prefix in c.PREFIX.items():
+            train = c.prepare(ann, self.output, 'train', fmt)
+            predict = c.prepare(ann, self.output, 'predict', fmt)
+            a, b = [list(p.postprocess.read_rows(d/'records.jsonl.gz')) for d in [train,predict]]
+            self.assertEqual(a, b[:1])
+            self.assertEqual(a[0]['labels'], ['5.4','2.11'])
+            self.assertEqual(a[0]['text'], prefix + 'Un título\n\nEnglish title')
+            self.assertEqual(a[0]['languages'], ['es', 'en'])
+            self.assertIsNone(b[1]['labels'])
+        extra = c.prepare(ann, self.output, 'predict', 'plain', include_fallback=True)
+        self.assertEqual(next(p.postprocess.read_rows(extra/'records.jsonl.gz'))['text'],
+                         'Un título\n\nResumen español\n\nEnglish title')
+        (ann/(self.part+'.gz')).write_bytes(b'broken')
+        with self.assertRaisesRegex(ValueError, 'inventory'):
+            c.prepare(ann, self.output, 'predict', 'plain')
