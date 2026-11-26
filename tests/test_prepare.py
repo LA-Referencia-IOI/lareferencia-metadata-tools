@@ -213,7 +213,7 @@ class PackageTest(unittest.TestCase):
         self.assertEqual(origins['subjectTerms'], [[['subjects', 2], ['subjects', 3]], [['subjects', 4]]])
         self.assertEqual(origins['subjects'], [['subjects', i] for i in range(9)])
         manifest = json.loads((dest/'manifest.json').read_bytes())
-        self.assertEqual(manifest['annotationProfile'], {'name':'ford-level2', 'version':'1.0', 'requested':'auto'})
+        self.assertEqual(manifest['annotationProfile'], {'name':'ford-level2', 'version':'1.1', 'requested':'auto'})
         self.assertEqual(manifest['counts']['subjectTerms'], 2)
         self.assertEqual(manifest['counts']['recordsWithSubjectTerms'], 1)
         self.assertEqual(manifest['counts']['subjectOccurrences'], 10)
@@ -299,3 +299,20 @@ class PackageTest(unittest.TestCase):
         (ann/(self.part+'.gz')).write_bytes(b'broken')
         with self.assertRaisesRegex(ValueError, 'inventory'):
             c.prepare(ann, self.output, 'predict', 'plain')
+
+
+    def test_peruvian_ford_alignment_preserves_subjects_and_origins(self):
+        subjects = [{"value": value} for value in (
+            "https://purl.org/pe-repo/ocde/ford#5.02.04",
+            "http://purl.org/pe-repo/ocde/ford#5.02.00",
+            "https://purl.org/becyt/ford/5.2",
+            "https://purl.org/pe-repo/ocde/ford#4.00.00",
+            "https://purl.org/pe-repo/ocde/ford#2.03.01",
+            "https://purl.org/pe-repo/ocde/ford#2.11.04",
+        )]
+        data, origins = {}, {}
+        p.annotation_profiles.ford_view(data, origins, subjects, "subjects", include_provenance=True)
+        self.assertEqual(data["subjects"], subjects)
+        self.assertEqual([term["code"] for term in data["subjectTerms"]], ["5.2", "2.11"])
+        self.assertEqual(origins["subjectTerms"], [[["subjects", 0], ["subjects", 1], ["subjects", 2]],
+                                                  [["subjects", 5]]])

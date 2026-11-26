@@ -156,7 +156,7 @@ view independently of the export mapping. Its default is `auto`:
 Existing commands, classification thresholds, role rules, abstract fallback,
 language detection, keyword preservation and combined recipes retain their
 behavior for the two previous mappings. The manifest now includes the additive
-`annotationProfile` object with `name`, `version` (`1.0`) and `requested`.
+`annotationProfile` object with `name`, `version` (`1.0` for bibliographic, `1.1` for ford-level2) and `requested`.
 Input mappings still must pass the inventory, version and identity checks.
 
 ```sh
@@ -179,7 +179,12 @@ two numeric components, a first component from 1 to 6 and a positive second
 component without leading zeros. This is structural selection, not validation
 against a complete vocabulary release. `5`, `5.4.1`, trailing path segments,
 queries, labels and unrelated URLs are excluded. Peruvian `pe-repo/ocde/ford`
-identifiers are preserved in `subjects` but are not translated to BECyT codes.
+identifiers are preserved in `subjects`. Since annotation profile 1.1,
+full `http(s)://purl.org/pe-repo/ocde/ford#A.BB.CC` literals map through an
+explicit table of 29 checked branches to the canonical BECyT second-level
+terms. For example, `5.02.04` and `5.02.00` both map to `5.2`.
+General `A.00.00` identifiers and branches outside the table stay in
+`subjects` without generating a label.
 HTTP and HTTPS versions of a code produce one canonical HTTPS term.
 
 Records without second-level codes remain in the output with `subjectTerms: []`.

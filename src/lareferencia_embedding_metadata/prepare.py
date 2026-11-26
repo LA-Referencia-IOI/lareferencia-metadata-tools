@@ -277,7 +277,8 @@ def prepare(root, output, models, *, combine=False, include_provenance=False, an
             "packageType": "embedding-inputs" if combine else "annotated-metadata",
             "packageId": package_id, "status": status, "startedAt": started, "finishedAt": now(),
             "counts": totals, "countsByNetwork": networks, "parts": data_parts,
-            "annotationProfile": {"name": resolved_profile, "version": "1.0", "requested": annotation_profile},
+            "annotationProfile": {"name": resolved_profile, "version": "1.1" if resolved_profile == "ford-level2" else "1.0",
+                                  "requested": annotation_profile},
             "files": [{"path": name, "bytes": (dest / name).stat().st_size, "sha256": postprocess.sha(dest / name)}
                       for name in names],
         }
