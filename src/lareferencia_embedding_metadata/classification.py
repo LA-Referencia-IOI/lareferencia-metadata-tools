@@ -16,10 +16,38 @@ from .annotation_profiles import FORD_LEVEL2
 
 
 PREFIX = {"plain": "", "gemma-classification": "task: classification | query: "}
+LABEL_PROFILES = ("ford-level1", "ford-level2", "ods")
+FORD_AREAS = frozenset(str(i) for i in range(1, 7))
+ODS_GOALS = frozenset(str(i) for i in range(1, 18))
 RECIPE = "titles-abstracts-by-language-v1"
 
 
-def example(row, text_format, include_fallback):
+def classification_labels(terms, profile):
+    if profile not in LABEL_PROFILES:
+        raise ValueError(f"Unknown classification label profile: {profile}")
+    labels = {}
+    for term in terms:
+        scheme = term["scheme"]
+        if profile == "ods":
+            if scheme != "ods":
+                continue
+            code = string(term, "code")
+            if code not in ODS_GOALS:
+                raise ValueError(f"Invalid ODS goal: {code}")
+        else:
+            if scheme != "becyt-ford":
+                continue
+            code = string(term, "code")
+            specific = FORD_LEVEL2.fullmatch("https://purl.org/becyt/ford/" + code)
+            if not specific and not (profile == "ford-level1" and code in FORD_AREAS):
+                raise ValueError(f"Invalid FORD code for {profile}: {code}")
+            if profile == "ford-level1":
+                code = code.partition(".")[0]
+        labels[code] = None
+    return list(labels) or None
+
+
+def example(row, text_format, include_fallback, label_profile="ford-level2"):
     data = row["data"]
     groups = defaultdict(list)
     for field in ("titles", "abstracts"):
@@ -29,18 +57,12 @@ def example(row, text_format, include_fallback):
             value = item["value"].strip()
             if value:
                 groups[string(item, "language")].append(value)
-    labels = {}
-    for term in data.get("subjectTerms", []):
-        if term["scheme"] == "becyt-ford":
-            code = string(term, "code")
-            if not FORD_LEVEL2.fullmatch("https://purl.org/becyt/ford/" + code):
-                raise ValueError(f"Invalid second-level BECyT code: {code}")
-            labels[code] = None
+    labels = classification_labels(data.get("subjectTerms", []), label_profile)
     if not groups:
         return None
     content = "\n\n".join(value for values in groups.values() for value in values)
     return {"network": string(row, "network"), "catalogId": string(row, "catalogId"),
-            "languages": list(groups), "text": PREFIX[text_format] + content, "labels": list(labels) or None}
+            "languages": list(groups), "text": PREFIX[text_format] + content, "labels": labels}
 
 
 def verified_file(root, name, inventory):
@@ -53,10 +75,10 @@ def verified_file(root, name, inventory):
     return path
 
 
-def prepare(root, output, mode, text_format, include_fallback=False):
+def prepare(root, output, mode, text_format, include_fallback=False, label_profile="ford-level2"):
     root = root.resolve()
-    if mode not in ("train", "predict") or text_format not in PREFIX:
-        raise ValueError("Unknown mode or text format")
+    if mode not in ("train", "predict") or text_format not in PREFIX or label_profile not in LABEL_PROFILES:
+        raise ValueError("Unknown mode, text format or label profile")
     if output.resolve().is_relative_to(root):
         raise ValueError("Choose an output directory outside the input package")
     raw = (root / "manifest.json").read_bytes()
@@ -88,7 +110,7 @@ def prepare(root, output, mode, text_format, include_fallback=False):
                         if next(cursor, None) != (pos, row["network"], row["catalogId"]):
                             raise ValueError(f"Index mismatch at {name}:{pos}")
                         counts["input"] += 1
-                        item = example(row, text_format, include_fallback)
+                        item = example(row, text_format, include_fallback, label_profile)
                         if item is None:
                             counts["missingText"] += 1
                         elif mode == "train" and item["labels"] is None:
@@ -106,7 +128,7 @@ def prepare(root, output, mode, text_format, include_fallback=False):
                     "status": "COMPLETE", "mode": mode, "parent": {"packageId": parent["packageId"],
                     "manifestHash": "sha256:" + hashlib.sha256(raw).hexdigest()},
                     "recipe": {"id": RECIPE, "textFormat": text_format, "includeFallback": include_fallback},
-                    "labelProfile": "ford-level2", "counts": counts, "parts": [part.name],
+                    "labelProfile": label_profile, "counts": counts, "parts": [part.name],
                     "files": [{"path": part.name, "bytes": part.stat().st_size, "sha256": digest(part)}]}
         (dest / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         dest.rename(final)
@@ -119,11 +141,13 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--mode", choices=("train", "predict"), required=True)
     parser.add_argument("--text-format", choices=PREFIX)
+    parser.add_argument("--label-profile", choices=LABEL_PROFILES)
     parser.add_argument("--include-fallback", action="store_true")
     parser.add_argument("--recipe-from", type=Path, help="Reuse the recipe of a classification package directory")
     args = parser.parse_args()
     try:
         fmt, fallback = args.text_format or "plain", args.include_fallback
+        profile = args.label_profile or "ford-level2"
         if args.recipe_from:
             if args.text_format or args.include_fallback:
                 parser.error("--recipe-from replaces --text-format and --include-fallback")
@@ -132,8 +156,9 @@ def main():
             if ((source["packageType"], source["contractVersion"], source["status"], recipe["id"]) !=
                     ("classification-dataset", 1, "COMPLETE", RECIPE) or type(recipe["includeFallback"]) is not bool):
                 raise ValueError("Unsupported classification recipe")
+            profile = args.label_profile or source["labelProfile"]
             fmt, fallback = recipe["textFormat"], recipe["includeFallback"]
-        dest = prepare(args.input, args.output, args.mode, fmt, fallback)
+        dest = prepare(args.input, args.output, args.mode, fmt, fallback, profile)
     except (ValueError, OSError, EOFError, KeyError, TypeError, sqlite3.Error) as exc:
         print(f"FAILED: {exc}", file=sys.stderr)
         return 1

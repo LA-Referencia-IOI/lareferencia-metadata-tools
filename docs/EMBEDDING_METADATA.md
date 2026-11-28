@@ -230,8 +230,10 @@ Run the preparer tests from this repository after installing the package.
 
 Run `prepare-classification-dataset --input "$ANNOTATED_DIR" --output "$OUTPUT_DIR" --mode train --text-format gemma-classification`.
 It reads a complete v2 annotated package and writes a new `cls-…` directory with a manifest and UTF-8 `records.jsonl.gz`.
-Each row contains `network`, `catalogId`, ordered `languages`, one `text`, and `labels` (distinct second-level BECyT codes from `subjectTerms`).
+Each row contains `network`, `catalogId`, ordered `languages`, one `text`, and `labels` (distinct codes selected from `subjectTerms` by the label profile).
 Join the row to the annotated package by network and catalog ID. Its manifest is identified by package ID and SHA-256.
+
+Use `--label-profile ford-level2` (default) for specific BECyT disciplines or `ford-level1` to collapse them to distinct parent areas 1–6. The first-level profile also accepts explicitly curated single-digit BECyT areas. For `--label-profile ods`, supply subject terms with `scheme: "ods"` and string goal codes `"1"` through `"17"`. These profiles need their respective reference terms in the annotated input. All three use the same text recipe. `--recipe-from` inherits the source label profile unless explicitly overridden.
 
 The v1 recipe reads titles then abstracts, trims surrounding whitespace, skips blank values and groups occurrences by language in first-seen order. Paragraphs are separated by two newlines. By default it skips uncertain fallback abstracts. Use `--include-fallback` to include them. Rows with no usable text are counted and omitted in both modes.
 

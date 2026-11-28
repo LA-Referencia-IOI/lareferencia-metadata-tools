@@ -301,6 +301,23 @@ class PackageTest(unittest.TestCase):
             c.prepare(ann, self.output, 'predict', 'plain')
 
 
+    def test_label_profiles_select_their_own_codes_and_preserve_text(self):
+        from lareferencia_embedding_metadata import classification as c
+
+        data = {"titles": [{"value": "Título", "language": "pt"}], "abstracts": [],
+                "subjectTerms": [{"scheme": "becyt-ford", "code": code} for code in ("5.3", "5.5", "2.1")]}
+        data["subjectTerms"].extend({"scheme": "ods", "code": code} for code in ("4", "7", "4"))
+        row = {"network": "BR", "catalogId": "item", "data": data}
+        for profile, expected in [("ford-level1", ["5", "2"]), ("ford-level2", ["5.3", "5.5", "2.1"]),
+                                  ("ods", ["4", "7"])]:
+            item = c.example(row, "gemma-classification", False, profile)
+            self.assertEqual(item["text"], "task: classification | query: Título")
+            self.assertEqual(item["labels"], expected)
+        self.assertIsNone(c.classification_labels([], "ods"))
+        self.assertEqual(c.classification_labels([{"scheme": "becyt-ford", "code": "5"}], "ford-level1"), ["5"])
+        with self.assertRaises(ValueError):
+            c.classification_labels([{"scheme": "ods", "code": "18"}], "ods")
+
     def test_peruvian_ford_alignment_preserves_subjects_and_origins(self):
         subjects = [{"value": value} for value in (
             "https://purl.org/pe-repo/ocde/ford#5.02.04",

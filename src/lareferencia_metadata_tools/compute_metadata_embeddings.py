@@ -17,7 +17,7 @@ from functools import partial
 from pathlib import Path, PurePosixPath
 
 from enrichment_package.embeddings import DATABASE, NO_LABELS_FIELD, VectorDatabase, reference_labels
-from lareferencia_embedding_metadata.classification import PREFIX, RECIPE
+from lareferencia_embedding_metadata.classification import LABEL_PROFILES, PREFIX, RECIPE
 
 LOGGER = logging.getLogger("metadata_embeddings")
 MODEL_ID = "google/embeddinggemma-2"
@@ -262,6 +262,15 @@ def indexed_rows(database, manifest):
     ))
 
 
+def classification_profile(manifest):
+    recipe = manifest["recipe"]
+    if (manifest["mode"] not in ("train", "predict") or manifest["labelProfile"] not in LABEL_PROFILES
+            or recipe["id"] != RECIPE or recipe["textFormat"] not in PREFIX
+            or type(recipe["includeFallback"]) is not bool):
+        raise ValueError("Unsupported classification dataset profile")
+    return {key: manifest[key] for key in ("mode", "labelProfile")}
+
+
 def build(args):
     source = args.source.resolve(strict=True)
     output = args.output.absolute()
@@ -283,12 +292,8 @@ def build(args):
         if manifest["contractVersion"] != 1:
             raise ValueError(f"Unsupported {package_type} contract version")
         if package_type == "classification-dataset":
+            classification = classification_profile(manifest)
             recipe = manifest["recipe"]
-            if (manifest["mode"] not in ("train", "predict") or manifest["labelProfile"] != "ford-level2"
-                    or recipe["id"] != RECIPE or recipe["textFormat"] not in PREFIX
-                    or type(recipe["includeFallback"]) is not bool):
-                raise ValueError("Unsupported classification dataset profile")
-            classification = {key: manifest[key] for key in ("mode", "labelProfile")}
         parts = manifest["parts"]
         if (not isinstance(parts, list) or len(set(parts)) != len(parts)
                 or any(not part.endswith(".jsonl.gz") or part == "provenance.jsonl.gz" or part not in files for part in parts)):
